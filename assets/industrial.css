@@ -22,7 +22,10 @@
 [data-testid="stHeader"] button,
 [data-testid="stHeader"] a,
 [data-testid="stHeader"] [role="button"] { pointer-events: auto; }
-.block-container { max-width: 1180px; min-height: 100vh; padding: 1rem 1.5rem 1.5rem; display: flex; align-items: center; }
+/* align-items 用 safe center：内容不超过一屏时保持垂直居中的版式，
+   一旦检索结果把页面撑高，就退回顶部对齐。普通的 center 会让内容同时向上溢出，
+   而向上溢出的部分无法滚动到达，工作区切换器和查询表单会彻底点不到。 */
+.block-container { max-width: 1180px; min-height: 100vh; padding: 1rem 1.5rem 1.5rem; display: flex; align-items: safe center; }
 .block-container > div { width: 100%; }
 
 [data-testid="stSidebar"] {

@@ -34,18 +34,25 @@ def factual_cad_text(record: dict[str, Any]) -> str:
     return textify_cad_features(record)
 
 
+def _geometry_vector(record: dict[str, Any]) -> tuple[np.ndarray, int]:
+    """把 STEP 的多个真实网格视角投影到 CLIP 图像空间并取均值。"""
+    views = model_previews(record)
+    view_vectors = np.asarray(
+        get_clip_model().encode(views, normalize_embeddings=True, batch_size=16), dtype=np.float32
+    )
+    return normalize(view_vectors.mean(axis=0)), len(views)
+
+
 def _record_modal_vectors(record: dict[str, Any]) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     """分别生成文本向量和 STEP 几何多视角向量，二者均位于 CLIP 共享空间。"""
     model = get_clip_model()
     text = factual_cad_text(record)
     text_vector = np.asarray(model.encode([text], normalize_embeddings=True)[0], dtype=np.float32)
-    views = model_previews(record)
-    view_vectors = np.asarray(model.encode(views, normalize_embeddings=True, batch_size=16), dtype=np.float32)
-    geometry_vector = normalize(view_vectors.mean(axis=0))
+    geometry_vector, view_count = _geometry_vector(record)
     audit = {
         "text_embedding_dim": int(text_vector.size),
         "geometry_embedding_dim": int(geometry_vector.size),
-        "render_view_count": len(views),
+        "render_view_count": view_count,
         "text_weight": TEXT_WEIGHT,
         "geometry_weight": GEOMETRY_WEIGHT,
         "method": "CLIP shared image-text space + eight real STEP mesh views",
@@ -151,6 +158,12 @@ def retrieve_unified_by_image(image, top_k: int = 5) -> list[dict[str, Any]]:
 
 
 def retrieve_unified_by_step(record: dict[str, Any], top_k: int = 5) -> list[dict[str, Any]]:
-    """以 STEP 几何多视角直接检索，不使用上传文件名或文本描述。"""
-    _, geometry_vector, _ = _record_modal_vectors(record)
+    """以 STEP 几何多视角直接检索，不使用上传文件名或文本描述。
+
+    索引里存的是文本与几何按权重混合后的向量，这里刻意只用纯几何向量查询：
+    上传模型没有可信的企业文本描述，掺入自动生成的文本会引入伪证据。
+    代价是查询向量与索引向量不同构，因此该分支的分数只能用于排序，
+    不能与 BGE 语义分或几何加权分横向比较。
+    """
+    geometry_vector, _ = _geometry_vector(record)
     return _query_vector(geometry_vector, top_k)

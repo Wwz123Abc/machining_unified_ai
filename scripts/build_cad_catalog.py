@@ -12,12 +12,13 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from machining_unified.cad.extraction import extract_step_features  # noqa: E402
+from machining_unified.cad.extraction import extract_step_features, textify_cad_features  # noqa: E402
 from machining_unified.config.paths import (  # noqa: E402
     CAD_CATALOG_PATH,
     CAD_DUPLICATES_PATH,
     CAD_SAMPLES_DIR,
 )
+from machining_unified.knowledge.manifests import resolve_design_metadata  # noqa: E402
 
 
 SAMPLE_DIR = CAD_SAMPLES_DIR
@@ -43,7 +44,10 @@ def relative_path(path: Path) -> str:
 def source_metadata(step_path: Path, sample_dir: Path) -> dict[str, str | None]:
     """提取不依赖模型几何的来源信息。"""
     relative_parts = step_path.relative_to(sample_dir).parts
-    group_folder = relative_parts[0] if len(relative_parts) > 1 else None
+    # 资料组取文件所在的直接目录。装配包按 assemblies/<装配号>/ 存放，
+    # 若取首层目录，所有装配都会被并进一个名为 assemblies 的伪资料组，
+    # group_component_count 也会跨装配累加。
+    group_folder = relative_parts[-2] if len(relative_parts) > 1 else None
     part_id = step_path.stem.split("_", 1)[0]
     return {
         "part_id": part_id,
@@ -104,14 +108,20 @@ def build_catalog(sample_dir: Path = SAMPLE_DIR) -> tuple[list[dict[str, Any]], 
         path = candidate["path"]
         group_folder = candidate["group_folder"]
         record = extract_step_features(path, part_id=str(candidate["part_id"]))
+        # 从 BOM 与人工标注清单回填可确认的设计属性；没有来源的字段保持空值。
+        # 必须在回填之后重算检索文本，否则这些属性进不了向量库和 BM25。
+        record["design_metadata"].update(resolve_design_metadata(str(candidate["part_id"])))
+        record["search_text"] = textify_cad_features(record)
         record.update(
             {
                 "source_file": candidate["source_file"],
                 "source_type": candidate["source_type"],
                 "model_group_id": f"GROUP-{group_folder}" if group_folder else candidate["part_id"],
                 "model_group_type": "企业资料组" if group_folder else "单模型",
-                "group_component_count": active_group_counts[group_folder],
-                "group_source_file_count": raw_group_counts[group_folder],
+                # 没有资料组的散装模型各自独立：它们共用 None 这个分组键，
+                # 直接取计数会让每个单模型都显示成“资料组内有 N 个 STEP”。
+                "group_component_count": active_group_counts[group_folder] if group_folder else 1,
+                "group_source_file_count": raw_group_counts[group_folder] if group_folder else 1,
                 "content_md5": candidate["content_md5"],
                 "is_duplicate": False,
                 "is_searchable": True,

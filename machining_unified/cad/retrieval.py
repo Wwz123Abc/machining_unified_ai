@@ -101,6 +101,7 @@ def score_cad_similarity(query: dict[str, Any], candidate: dict[str, Any]) -> tu
     # 可防止系统虚构不存在的设计事实。
     comparable_fields = {
         "material": ("材料一致", 0.10),
+        "surface_treatment": ("表面处理一致", 0.05),
         "roughness_ra": ("粗糙度要求一致", 0.05),
         "precision_requirement": ("尺寸公差/精度一致", 0.08),
         "heat_treatment": ("热处理要求一致", 0.05),

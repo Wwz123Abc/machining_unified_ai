@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import shutil
 import sys
 from pathlib import Path
@@ -20,18 +19,12 @@ from machining_unified.config.paths import (  # noqa: E402
     ASSEMBLY_PACKAGES_DIR,
     CAD_SAMPLES_DIR,
 )
+from machining_unified.knowledge.part_ids import normalized_part_id  # noqa: E402
 
 
 # 原始资料包会复制到 data/enterprise/assembly_packages 以便审计；
 # 仅其装配 STEP 会放入 data/enterprise/cad_samples 参与常规几何索引。
-
-
-def normalized_part_id(value: str) -> str:
-    # 工程图与 BOM 系统可能增加三位产品前缀或版本后缀。
-    # 标准化仅生成谨慎的关联键，不覆盖原始编码。
-    text = re.sub(r"\.[^.]+$", "", value.upper())
-    text = re.sub(r"^[0-9]{3}(?=DTXT)", "", text)
-    return re.sub(r"([0-9]{3})[A-Z]$", r"\1", text)
+# 图号标准化规则与问答期共用 knowledge/part_ids.py，避免写入期与查询期对不上。
 
 
 def read_bom(path: Path) -> list[dict[str, Any]]:

@@ -8,7 +8,7 @@ import streamlit as st
 from PIL import Image
 
 from machining_unified.cad.retrieval import load_cad_catalog
-from machining_unified.cad.viewer import render_step_file
+from machining_unified.cad.viewer import render_step_payload, step_mesh_payload
 from machining_unified.knowledge.enterprise import answer_assistant_question, answer_enterprise_question
 from machining_unified.retrieval.cad_rag import generate_rag_explanation
 from machining_unified.services.model_search import save_step_upload, search_by_image, search_by_step, search_by_text
@@ -32,6 +32,9 @@ def initialize_state() -> None:
     st.session_state.setdefault("chat_messages", [])
     st.session_state.setdefault("conversation_id", new_conversation_id())
     st.session_state.setdefault("loaded_conversation_id", None)
+    # 检索结果只在提交那一次重跑里产生。存入会话状态后，调整返回数量、
+    # 切换查询方式等交互引发的重跑才不会把已有结果整块清空。
+    st.session_state.setdefault("model_search", None)
 
 
 def start_new_conversation() -> None:
@@ -80,20 +83,17 @@ if workspace == "模型检索":
                     query_path = save_step_upload(uploaded_file)
                     st.write(":material/view_in_ar: 提取 OCP/XCAF 几何事实")
                     results = search_by_step(query_path, top_k=top_k, use_unified=use_unified)
+                    # 临时文件稍后删除，这里先把网格取出来随结果一起保存。
+                    query_mesh = step_mesh_payload(str(query_path.resolve()))
                     status.update(label="STEP 模型检索完成", state="complete", expanded=False)
-
-                st.markdown("#### 查询模型 3D 预览")
-                render_step_file(query_path, key="query-step-model")
-                retrieval_components.render_geometry_results(results["geometry"])
-                retrieval_components.render_semantic_results(results["semantic"], catalog_by_id, "step-semantic")
-                if results["unified"]:
-                    retrieval_components.render_unified_results(results["unified"], catalog_by_id, "step-unified")
-                explanation = generate_rag_explanation(results["query"], results["semantic"])
-                if explanation:
-                    with st.container(border=True):
-                        st.markdown("#### 基于检索证据的差异说明")
-                        st.write(explanation)
+                st.session_state.model_search = {
+                    "mode": query_mode,
+                    "results": results,
+                    "query_mesh": query_mesh,
+                    "explanation": generate_rag_explanation(results["query"], results["semantic"]),
+                }
             except Exception as error:
+                st.session_state.model_search = None
                 st.error(f"STEP 检索失败：{error}", icon=":material/error:")
             finally:
                 if query_path and query_path.exists():
@@ -104,25 +104,47 @@ if workspace == "模型检索":
                 with progress_slot.status("正在执行中文语义与工程混合检索", expanded=True) as status:
                     results = search_by_text(query_text.strip(), top_k=top_k, use_unified=use_unified)
                     status.update(label="文字模型检索完成", state="complete", expanded=False)
-                retrieval_components.render_semantic_results(results["semantic"], catalog_by_id, "text-semantic")
-                retrieval_components.render_hybrid_results(results["hybrid"], results["families"])
-                if results["unified"]:
-                    retrieval_components.render_unified_results(results["unified"], catalog_by_id, "text-unified")
+                st.session_state.model_search = {"mode": query_mode, "results": results}
             except Exception as error:
+                st.session_state.model_search = None
                 st.error(f"文字模型检索失败：{error}", icon=":material/error:")
 
         else:
             try:
                 image = Image.open(uploaded_file).convert("RGB")
-                st.image(image, caption="查询图片", width=320)
                 with progress_slot.status("正在执行视觉模型检索", expanded=True) as status:
                     results = search_by_image(image, catalog, top_k=top_k, use_unified=use_unified)
                     status.update(label="图片模型检索完成", state="complete", expanded=False)
-                retrieval_components.render_image_results(results["visual"])
-                if results["unified"]:
-                    retrieval_components.render_unified_results(results["unified"], catalog_by_id, "image-unified")
+                st.session_state.model_search = {"mode": query_mode, "results": results, "query_image": image}
             except Exception as error:
+                st.session_state.model_search = None
                 st.error(f"图片模型检索失败：{error}", icon=":material/error:")
+
+    # 从会话状态渲染：切换查询方式时不展示上一种方式留下的结果。
+    search_state = st.session_state.model_search
+    if search_state and search_state["mode"] == query_mode:
+        results = search_state["results"]
+        if query_mode == "STEP 模型":
+            st.markdown("#### 查询模型 3D 预览")
+            render_step_payload(search_state["query_mesh"], key="query-step-model")
+            retrieval_components.render_geometry_results(results["geometry"])
+            retrieval_components.render_semantic_results(results["semantic"], catalog_by_id, "step-semantic")
+            if results["unified"]:
+                retrieval_components.render_unified_results(results["unified"], catalog_by_id, "step-unified")
+            if search_state["explanation"]:
+                with st.container(border=True):
+                    st.markdown("#### 基于检索证据的差异说明")
+                    st.write(search_state["explanation"])
+        elif query_mode == "文字描述":
+            retrieval_components.render_semantic_results(results["semantic"], catalog_by_id, "text-semantic")
+            retrieval_components.render_hybrid_results(results["hybrid"], results["families"])
+            if results["unified"]:
+                retrieval_components.render_unified_results(results["unified"], catalog_by_id, "text-unified")
+        else:
+            st.image(search_state["query_image"], caption="查询图片", width=320)
+            retrieval_components.render_image_results(results["visual"])
+            if results["unified"]:
+                retrieval_components.render_unified_results(results["unified"], catalog_by_id, "image-unified")
 
 
 else:

@@ -189,14 +189,25 @@ export default function(component) {
 )
 
 
+def render_step_payload(payload: dict[str, Any], *, key: str, height: int = 420) -> None:
+    """渲染已提取好的 STEP 网格。
+
+    上传的查询模型使用临时文件，检索结束后会被删除；保留网格数据本身，
+    才能在后续的页面重跑中继续显示三维预览。
+    """
+    if not payload or not payload.get("triangles"):
+        st.warning("没有可显示的 STEP 三角网格。")
+        return
+    _VIEWER(data=payload, key=key, height=height)
+    st.caption(f"真实 STEP 网格：{payload['triangle_count']} 个三角面；拖动模型可旋转查看。")
+
+
 def render_step_file(source: Path, *, key: str, height: int = 420) -> None:
     """将指定的真实 STEP 文件显示为可拖动旋转的三维视图。"""
     if not source.is_file():
         st.warning("该检索结果的 STEP 源文件不存在，无法显示三维模型。")
         return
-    payload = step_mesh_payload(str(source.resolve()))
-    _VIEWER(data=payload, key=key, height=height)
-    st.caption(f"真实 STEP 网格：{payload['triangle_count']} 个三角面；拖动模型可旋转查看。")
+    render_step_payload(step_mesh_payload(str(source.resolve())), key=key, height=height)
 
 
 def render_step_model(record: dict[str, Any], *, key: str, height: int = 420) -> None:

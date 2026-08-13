@@ -7,6 +7,28 @@ from typing import Any
 import streamlit as st
 
 from machining_unified.cad.viewer import render_step_model
+from machining_unified.knowledge.engineering import expand_part_relations
+
+
+def render_graph_relations(part_id: str) -> None:
+    """展示该零件在知识图谱中的直接邻域。
+
+    导入的 BOM/工程图关系是事实，类别、功能和圆柱接口是几何规则候选，
+    两者必须分开呈现，不能让候选看起来像已确认的装配关系。
+    """
+
+    relations = expand_part_relations(str(part_id))
+    if not relations["facts"] and not relations["candidates"]:
+        return
+    with st.expander("知识图谱关联", icon=":material/hub:"):
+        if relations["facts"]:
+            st.caption("导入资料事实（装配 BOM / 工程图）")
+            for item in relations["facts"]:
+                st.write(f"• {item['relation']}：{item['node']}")
+        if relations["candidates"]:
+            st.caption("几何规则候选（需人工确认）")
+            for item in relations["candidates"]:
+                st.write(f"• {item['relation']}：{item['node']}")
 
 
 def render_geometry_results(items: list[dict[str, Any]]) -> None:
@@ -24,6 +46,7 @@ def render_geometry_results(items: list[dict[str, Any]]) -> None:
                 f"来源：`{item.get('source_file') or item.get('file_name', '')}`"
             )
             st.write("相似依据：" + ("；".join(item.get("reasons", [])) or "可比较字段有限"))
+            render_graph_relations(item["part_id"])
             if item.get("source_file"):
                 render_step_model(item, key=f"geometry-result-{index}-{item['part_id']}")
 

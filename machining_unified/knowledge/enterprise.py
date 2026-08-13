@@ -19,25 +19,13 @@ from rank_bm25 import BM25Plus
 from machining_unified.cad.extraction import textify_cad_features
 from machining_unified.cad.retrieval import load_cad_catalog
 from machining_unified.config.paths import ASSEMBLY_PACKAGES_DIR, ENTERPRISE_VECTOR_DIR, PROJECT_ROOT
+from machining_unified.knowledge.part_ids import extract_part_ids, normalized_part_id
 from machining_unified.retrieval.cad_rag import get_embeddings
 
 
 KB_VECTOR_DIR = ENTERPRISE_VECTOR_DIR
 
 
-def _normalized_part_id(value: str) -> str:
-    """消除 BOM 三位前缀与工程图版本尾缀，得到可跨资料关联的标准图号。"""
-    text = re.sub(r"\.[^.]+$", "", value.upper())
-    text = re.sub(r"^[0-9]{3}(?=DTXT)", "", text)
-    return re.sub(r"([0-9]{3})[A-Z]$", r"\1", text)
-
-
-def _part_ids(text: str) -> set[str]:
-    """提取企业资料中常见的 DTXT 图号，并转为标准编号。"""
-    return {
-        _normalized_part_id(value)
-        for value in re.findall(r"(?:[0-9]{3})?DTXT[0-9]{3}-[0-9]{3}-[0-9]{3}[A-Z]?", text.upper())
-    }
 
 
 def _relative_path(path: Path) -> str:
@@ -92,7 +80,7 @@ def _manifest_documents() -> list[Document]:
                 "单位": item.get("unit", ""),
             }
             content = "；".join(f"{name}：{value}" for name, value in fields.items() if value not in (None, ""))
-            normalized_id = str(item.get("normalized_part_id") or _normalized_part_id(part_id))
+            normalized_id = str(item.get("normalized_part_id") or normalized_part_id(part_id))
             documents.append(
                 Document(
                     page_content=f"企业 BOM 条目。所属装配：{assembly_id}。{content}。",
@@ -122,7 +110,7 @@ def _drawing_documents() -> list[Document]:
             pages = [f"工程图 PDF 无法读取：{error}"]
         for page_index, text in enumerate(pages, start=1):
             body = text.strip() or "该工程图页未提取到可搜索文字，需要 OCR 后才能问答。"
-            normalized_id = _normalized_part_id(path.stem)
+            normalized_id = normalized_part_id(path.stem)
             documents.append(
                 Document(
                     page_content=(
@@ -195,7 +183,7 @@ def retrieve_enterprise_knowledge(question: str, top_k: int = 5) -> list[dict[st
     """融合真实资料的向量语义与关键词检索，并保留每条来源。"""
     documents = enterprise_documents()
     bm25_scores = _bm25_scores(question, documents)
-    requested_part_ids = _part_ids(question)
+    requested_part_ids = extract_part_ids(question)
     vector_scores: dict[str, float] = {}
     warning: str | None = None
     try:
@@ -210,7 +198,7 @@ def retrieve_enterprise_knowledge(question: str, top_k: int = 5) -> list[dict[st
         vector = vector_scores.get(source_id, 0.0)
         lexical = bm25_scores.get(source_id, 0.0)
         score = 0.72 * vector + 0.28 * lexical if vector_scores else lexical
-        document_part_ids = _part_ids(
+        document_part_ids = extract_part_ids(
             " ".join(
                 [
                     document.page_content,

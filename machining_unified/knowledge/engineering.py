@@ -1,18 +1,16 @@
-"""Engineering semantics, hierarchical hybrid RAG, and auditable answers."""
+"""工程语义、知识图谱与层级混合检索。"""
 
 from __future__ import annotations
 
-import os
 import json
 import re
 from collections import defaultdict
+from functools import lru_cache
 from typing import Any
-
-from dotenv import load_dotenv
 
 from machining_unified.cad.extraction import classify_part_family, geometry_semantics
 from machining_unified.cad.retrieval import load_cad_catalog
-from machining_unified.config.paths import ASSEMBLY_PACKAGES_DIR, PROJECT_ROOT
+from machining_unified.knowledge.manifests import assembly_manifest_for, load_assembly_manifests
 
 
 # 每条检索结果保留独立的向量、BM25、Ensemble 与图谱贡献，
@@ -30,19 +28,6 @@ DOMAIN_TERMS = (
     "支撑", "衬套", "承载", "安装定位", "孔位磨损", "壁厚", "裂纹", "轴类", "套筒",
     "法兰", "板件", "箱体", "支架", "维护", "装配", "轴承", "薄壁", "圆柱", "孔",
 )
-
-
-def load_assembly_manifests() -> list[dict[str, Any]]:
-    # 装配资料包是可选的。没有导入资料包属于正常的单零件部署状态，
-    # 不能因此停止检索。
-    manifests = []
-    for path in ASSEMBLY_PACKAGES_DIR.glob("*/assembly_manifest.json"):
-        manifests.append(json.loads(path.read_text(encoding="utf-8")))
-    return manifests
-
-
-def assembly_manifest_for(part_id: str) -> dict[str, Any] | None:
-    return next((manifest for manifest in load_assembly_manifests() if manifest["assembly_id"] == part_id), None)
 
 
 def tokenize(text: str) -> list[str]:
@@ -184,6 +169,39 @@ def build_knowledge_graph(records: list[dict[str, Any]] | None = None) -> dict[s
     return {"nodes": nodes, "edges": edges}
 
 
+@lru_cache(maxsize=1)
+def _cached_knowledge_graph() -> tuple[str, ...]:
+    """把图谱序列化后缓存，避免每条检索结果都重新遍历目录构图。"""
+    graph = build_knowledge_graph()
+    return (json.dumps(graph, ensure_ascii=False),)
+
+
+def expand_part_relations(part_id: str) -> dict[str, list[dict[str, str]]]:
+    """取出某个零件在知识图谱中的直接邻域，对应实现方案 L2 的图谱扩展检索。
+
+    导入的 BOM 与工程图边是事实；类别、功能和圆柱接口边只是几何规则推断出的候选。
+    两者分开返回，界面不得把它们混为同一种证据。
+    """
+    graph = json.loads(_cached_knowledge_graph()[0])
+    labels = {node["id"]: node["label"] for node in graph["nodes"]}
+    kinds = {node["id"]: node["kind"] for node in graph["nodes"]}
+    # BOM 与装配节点来自真实导入资料；类别/功能/接口节点来自几何规则。
+    factual_kinds = {"assembly", "bom_part"}
+    facts: list[dict[str, str]] = []
+    candidates: list[dict[str, str]] = []
+    for edge in graph["edges"]:
+        if part_id not in (edge["source"], edge["target"]):
+            continue
+        other = edge["target"] if edge["source"] == part_id else edge["source"]
+        item = {
+            "relation": edge["label"],
+            "node": labels.get(other, other),
+            "kind": kinds.get(other, "unknown"),
+        }
+        (facts if item["kind"] in factual_kinds else candidates).append(item)
+    return {"facts": facts, "candidates": candidates}
+
+
 def graphviz_dot(graph: dict[str, Any]) -> str:
     colors = {"model": "#19b5fe", "family": "#f5a623", "function": "#7ed321", "assembly": "#d9534f", "bom_part": "#9b59b6"}
     lines = ["digraph engineering_graph {", "rankdir=LR;", "node [shape=box style=rounded fontname=Arial];"]
@@ -299,28 +317,3 @@ def hierarchical_retrieve(query: str, top_k: int = 3) -> tuple[list[dict[str, An
     return hybrid_retrieve(query, top_k=top_k, candidates=scoped), families
 
 
-def grounded_answer(question: str, top_k: int = 3) -> dict[str, Any]:
-    # 没有 DeepSeek Key 时仍返回确定性的带引用证据，
-    # 而不是尝试生成没有依据的自然语言回答。
-    evidence, families = hierarchical_retrieve(question, top_k=top_k)
-    if not evidence:
-        return {"answer": "当前 CAD 知识库没有可用记录。", "evidence": [], "families": []}
-    context = "\n".join(f"[{item['record']['part_id']}] {enriched_text(item['record'])}" for item in evidence)
-    load_dotenv(PROJECT_ROOT / ".env")
-    api_key = os.getenv("DEEPSEEK_API_KEY")
-    if api_key:
-        try:
-            from langchain_core.prompts import ChatPromptTemplate
-            from langchain_openai import ChatOpenAI
-
-            prompt = ChatPromptTemplate.from_messages([("system", "你是机械工程知识助手。仅依据证据回答，引用模型编号，明确几何事实与候选推断。"), ("human", "问题：{question}\n路由类别：{families}\n证据：\n{context}")])
-            response = (prompt | ChatOpenAI(model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"), api_key=api_key, base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"), temperature=0)).invoke({"question": question, "families": "、".join(FAMILY_LABELS[family] for family in families), "context": context})
-            return {"answer": response.content if isinstance(response.content, str) else str(response.content), "evidence": evidence, "families": families, "generated": True}
-        except Exception as error:
-            warning = f"模型生成不可用，已返回本地证据摘要：{error}"
-    else:
-        warning = None
-    primary = evidence[0]
-    profile = primary["profile"]
-    answer = f"第一层已路由到{'、'.join(FAMILY_LABELS[family] for family in families)}；第二层检索最相关模型为 {primary['record']['part_id']}（相关度 {primary['score']:.2f}）。其候选功能为{'、'.join(profile['functions'])}，候选装配关系为{'、'.join(profile['assembly'])}。这些候选仍需结合图纸、BOM 与公差复核。"
-    return {"answer": answer, "evidence": evidence, "families": families, "generated": False, "warning": warning}

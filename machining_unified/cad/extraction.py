@@ -318,6 +318,7 @@ def extract_step_features(
         "review_status": "pending_manual_review",
         "design_metadata": {
             "material": None,
+            "surface_treatment": None,
             "roughness_ra": None,
             "precision_requirement": None,
             "heat_treatment": None,
