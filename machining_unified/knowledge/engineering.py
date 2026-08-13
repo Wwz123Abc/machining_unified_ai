@@ -202,16 +202,6 @@ def expand_part_relations(part_id: str) -> dict[str, list[dict[str, str]]]:
     return {"facts": facts, "candidates": candidates}
 
 
-def graphviz_dot(graph: dict[str, Any]) -> str:
-    colors = {"model": "#19b5fe", "family": "#f5a623", "function": "#7ed321", "assembly": "#d9534f", "bom_part": "#9b59b6"}
-    lines = ["digraph engineering_graph {", "rankdir=LR;", "node [shape=box style=rounded fontname=Arial];"]
-    for node in graph["nodes"]:
-        lines.append(f'"{node["id"]}" [label="{str(node["label"]).replace(chr(34), chr(39))}" color="{colors[node["kind"]]}"];')
-    for edge in graph["edges"]:
-        lines.append(f'"{edge["source"]}" -> "{edge["target"]}" [label="{edge["label"]}"];')
-    return "\n".join(lines + ["}"])
-
-
 def _family_score(query: str, profile: dict[str, Any]) -> float:
     query_tokens = set(tokenize(query))
     profile_tokens = set(tokenize(" ".join([profile["name"], *profile["functions"], *profile["assembly"], *profile["maintenance"]])))
