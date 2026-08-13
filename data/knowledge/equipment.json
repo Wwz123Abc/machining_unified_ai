@@ -1,0 +1,8 @@
+[
+  {"equipment_id":"EQ-001","name":"教学型数控车床","machine_type":"数控车床","part_types":["轴类","套筒类"],"materials":["45钢","304不锈钢","6061铝合金"],"precision_level":"IT7级常规精加工","work_envelope":"外圆约φ300mm以内","notes":"适合车削、钻孔、镗孔教学路线；实际能力以设备验收为准","source_type":"教学样例"},
+  {"equipment_id":"EQ-002","name":"精密外圆磨床","machine_type":"外圆磨床","part_types":["轴类"],"materials":["45钢","304不锈钢"],"precision_level":"IT5～IT6示例","work_envelope":"轴类外圆磨削","notes":"高精度外圆需确认中心孔、磨削余量和检测能力","source_type":"教学样例"},
+  {"equipment_id":"EQ-003","name":"立式加工中心","machine_type":"加工中心","part_types":["盘类","箱体类"],"materials":["45钢","304不锈钢","6061铝合金","HT250"],"precision_level":"IT7级常规精加工","work_envelope":"平面、孔系、腔体","notes":"适合一次装夹完成基准面与孔系；实际行程需核对","source_type":"教学样例"},
+  {"equipment_id":"EQ-004","name":"精密镗床","machine_type":"镗床","part_types":["套筒类","箱体类"],"materials":["45钢","HT250","304不锈钢"],"precision_level":"IT6～IT7示例","work_envelope":"中小型孔系","notes":"精镗前需确认镗杆刚性、孔系基准和测量方案","source_type":"教学样例"},
+  {"equipment_id":"EQ-005","name":"数控铣床","machine_type":"数控铣床","part_types":["盘类","箱体类"],"materials":["6061铝合金","45钢","HT250"],"precision_level":"IT8～IT7示例","work_envelope":"平面、槽、孔系","notes":"适合粗铣、半精铣和一般孔系加工","source_type":"教学样例"},
+  {"equipment_id":"EQ-006","name":"珩磨设备","machine_type":"珩磨机","part_types":["套筒类","箱体类"],"materials":["45钢","304不锈钢","HT250"],"precision_level":"高精度孔示例","work_envelope":"内孔光整加工","notes":"仅在图纸精度、表面完整性和余量适配时采用","source_type":"教学样例"}
+]

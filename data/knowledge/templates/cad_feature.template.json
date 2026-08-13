@@ -1,0 +1,20 @@
+{
+  "part_id": "PART-YYYY-NNNN",
+  "source_step_file": "零件名称.step",
+  "material": null,
+  "part_type": null,
+  "bounding_box_mm": {
+    "length": null,
+    "width": null,
+    "height": null
+  },
+  "geometric_features": {
+    "through_holes": [],
+    "blind_holes": [],
+    "slots": [],
+    "threads": [],
+    "thin_wall_min_mm": null
+  },
+  "manufacturing_features": [],
+  "review_status": "draft"
+}

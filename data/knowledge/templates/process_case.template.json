@@ -1,0 +1,10 @@
+{
+  "case_id": "CASE-XXX",
+  "part_id": "PART-YYYY-NNNN",
+  "title": "零件名称与工艺主题",
+  "material": "45钢",
+  "part_type": "轴类",
+  "content": "零件特征：\n质量要求：\n毛坯与热处理：\n推荐工艺：\n设备与刀具：\n检验方法：\n工艺说明：",
+  "version": "v1.0",
+  "review_status": "draft"
+}

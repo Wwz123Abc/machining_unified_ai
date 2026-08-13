@@ -1,0 +1,10 @@
+[
+  {"tool_id":"TL-001","name":"硬质合金外圆车刀","processes":["粗车","精车"],"materials":["45钢","304不锈钢","6061铝合金"],"features":["轴类","套筒类"],"notes":"刀具牌号、槽型和切削参数需按材料与设备确认","source_type":"教学样例"},
+  {"tool_id":"TL-002","name":"不锈钢专用车刀","processes":["粗车","精车","端面"],"materials":["304不锈钢"],"features":["加工硬化风险","薄壁"],"notes":"保持连续切削并控制切削热，避免停留磨损","source_type":"教学样例"},
+  {"tool_id":"TL-003","name":"精镗刀","processes":["半精镗","精镗"],"materials":["45钢","304不锈钢","HT250"],"features":["内孔","轴承孔","孔系"],"notes":"需确认镗杆刚性、测量方式和孔径余量","source_type":"教学样例"},
+  {"tool_id":"TL-004","name":"外圆磨削砂轮","processes":["外圆磨削"],"materials":["45钢","304不锈钢"],"features":["IT6","IT5","Ra0.8","Ra0.4"],"notes":"砂轮规格、修整和冷却参数不能脱离设备确定","source_type":"教学样例"},
+  {"tool_id":"TL-005","name":"铝合金立铣刀","processes":["粗铣","精铣","槽加工"],"materials":["6061铝合金"],"features":["安装板","腔体","薄壁"],"notes":"刀具需锋利并保证排屑，避免积屑瘤和薄壁振动","source_type":"教学样例"},
+  {"tool_id":"TL-006","name":"硬质合金钻头","processes":["钻孔","扩孔"],"materials":["45钢","304不锈钢","6061铝合金","HT250"],"features":["孔系","定位孔","中心孔"],"notes":"孔深、冷却、排屑和钻尖形式需按设备确认","source_type":"教学样例"},
+  {"tool_id":"TL-007","name":"铰刀","processes":["铰孔"],"materials":["45钢","6061铝合金","HT250"],"features":["IT7","定位孔","精密孔"],"notes":"铰孔前余量和导向状态必须合适","source_type":"教学样例"},
+  {"tool_id":"TL-008","name":"键槽铣刀","processes":["铣键槽"],"materials":["45钢"],"features":["键槽","传动轴"],"notes":"键槽尺寸、对称度和去毛刺要求按图纸检验","source_type":"教学样例"}
+]

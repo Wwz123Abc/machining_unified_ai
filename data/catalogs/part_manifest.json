@@ -1,0 +1,35 @@
+[
+  {
+    "part_id": "TEACH-CAD-001",
+    "material": "45钢",
+    "part_type": "轴类",
+    "text_case_ids": [
+      "CASE-006"
+    ],
+    "drawing_files": [],
+    "cad_file": "data/enterprise/cad_samples/TEACH-CAD-001_shaft_keyway.step",
+    "source_type": "原创建教学关联"
+  },
+  {
+    "part_id": "TEACH-CAD-002",
+    "material": "304不锈钢",
+    "part_type": "套筒类",
+    "text_case_ids": [
+      "CASE-004"
+    ],
+    "drawing_files": [],
+    "cad_file": "data/enterprise/cad_samples/TEACH-CAD-002_thin_wall_sleeve.step",
+    "source_type": "原创建教学关联"
+  },
+  {
+    "part_id": "TEACH-CAD-003",
+    "material": "HT250",
+    "part_type": "箱体类",
+    "text_case_ids": [
+      "CASE-005"
+    ],
+    "drawing_files": [],
+    "cad_file": "data/enterprise/cad_samples/TEACH-CAD-003_box_bearing_hole.step",
+    "source_type": "原创建教学关联"
+  }
+]
