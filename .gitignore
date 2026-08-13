@@ -4,6 +4,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .idea/
+.claude/
 .streamlit/secrets.toml
 
 # 本地向量库与运行历史

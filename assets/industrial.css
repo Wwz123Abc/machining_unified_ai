@@ -12,6 +12,16 @@
   background-position: center; background-size: cover; background-attachment: fixed;
 }
 [data-testid="stHeader"], [data-testid="stAppViewContainer"] { background: transparent; }
+/* 顶栏是 56px 高的全宽透明覆盖层（z-index 999990），而下面的 .block-container 只留了 1rem 顶部内边距。
+   视口不够高时页面首个组件（工作区切换器）会落进这条带子里，看得见却点不动。
+   让顶栏本身不接收指针事件、只把真实按钮恢复可点击，既修好穿透又保留布局和工具栏。 */
+[data-testid="stHeader"],
+[data-testid="stHeader"] [data-testid="stToolbar"],
+[data-testid="stHeader"] [data-testid="stToolbar"] > div { pointer-events: none; }
+[data-testid="stHeader"] [data-testid="stToolbar"] > div > div,
+[data-testid="stHeader"] button,
+[data-testid="stHeader"] a,
+[data-testid="stHeader"] [role="button"] { pointer-events: auto; }
 .block-container { max-width: 1180px; min-height: 100vh; padding: 1rem 1.5rem 1.5rem; display: flex; align-items: center; }
 .block-container > div { width: 100%; }
 

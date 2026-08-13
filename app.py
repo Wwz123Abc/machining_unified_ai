@@ -12,7 +12,6 @@ from machining_unified.cad.viewer import render_step_file
 from machining_unified.knowledge.enterprise import answer_assistant_question, answer_enterprise_question
 from machining_unified.retrieval.cad_rag import generate_rag_explanation
 from machining_unified.services.model_search import save_step_upload, search_by_image, search_by_step, search_by_text
-from machining_unified.services.process import get_source_label, recommend_process
 from machining_unified.storage.chat_history import append_message, list_conversations, load_conversation, new_conversation_id
 from machining_unified.ui import components, retrieval_components
 from machining_unified.ui.styles import apply_industrial_style
@@ -65,37 +64,7 @@ with st.sidebar:
 workspace = components.render_workspace_selector()
 
 
-if workspace == "工艺推荐":
-    submitted, question, progress_slot = components.render_workbench()
-    if submitted:
-        if not question.strip():
-            st.error("工艺推荐需要零件文字描述；如仅上传模型，请切换到“模型检索”。", icon=":material/input:")
-        else:
-            with progress_slot.container():
-                progress_bar = st.progress(4, text="正在启动工艺推演…", width="stretch")
-
-                def update_progress(value: int, label: str) -> None:
-                    progress_bar.progress(value, text=label)
-
-                with st.status("工艺推演运行中", expanded=True) as status:
-                    try:
-                        response = recommend_process(
-                            question,
-                            drawing_file=st.session_state.get("drawing_upload"),
-                            cad_file=st.session_state.get("cad_upload"),
-                            requested_part_id=st.session_state.get("part_id", ""),
-                            on_progress=update_progress,
-                        )
-                    except Exception as error:
-                        status.update(label="处理失败", state="error", expanded=True)
-                        st.error(f"处理失败：{error}", icon=":material/error:")
-                        st.stop()
-                    status.update(label="工艺方案已生成", state="complete", expanded=False)
-            progress_slot.empty()
-            components.render_result(response, get_source_label)
-
-
-elif workspace == "模型检索":
+if workspace == "模型检索":
     submitted, query_mode, query_text, uploaded_file, use_unified, progress_slot = (
         components.render_model_search_workbench()
     )
