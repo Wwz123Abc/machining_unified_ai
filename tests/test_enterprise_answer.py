@@ -73,6 +73,40 @@ def test_identifier_match_priority() -> None:
     check("精确命中全部排在前面", matched == sorted(matched, reverse=True), str(matched))
 
 
+def test_ranking_is_stable_across_top_k() -> None:
+    """调整"返回数量"只应改变截断长度，不应改变排序本身。
+
+    此前向量候选窗口按 top_k*4 计算，窗口外的文档向量分记 0，而 BM25 是全库算的。
+    两种尺度混合导致同一条证据在 top_k=8 时排第 1、top_k=5 时跌出前五。
+    """
+    print("\n== 排序不随 top_k 漂移 ==")
+    for question in ("110008089491", "DTXT806-300-012 的材料和表面处理"):
+        orders = {
+            top_k: [item.source_id for item in retrieve_enterprise_knowledge(question, top_k=top_k)]
+            for top_k in (3, 5, 8)
+        }
+        base = orders[8]
+        for top_k in (3, 5):
+            check(
+                f"{question[:16]!r} top_k={top_k} 是 top_k=8 的前缀",
+                orders[top_k] == base[:top_k],
+                f"{orders[top_k]} vs {base[:top_k]}",
+            )
+
+
+def test_numeric_supplier_code_is_recalled() -> None:
+    """纯数字物料编码没有图号形状，拿不到精确匹配加权，必须靠 BM25 召回。"""
+    print("\n== 纯数字物料编码召回 ==")
+    evidence = retrieve_enterprise_knowledge("110008089491", top_k=5)
+    ids = [item.source_id for item in evidence]
+    check("目标 BOM 条目被召回", "bom:630DTXT806-300-000:20" in ids, str(ids[:3]))
+    if ids and ids[0] == "bom:630DTXT806-300-000:20":
+        check("且排在第一位", True)
+        check("词法分达到满分", evidence[0].lexical_score == 1.0, f"{evidence[0].lexical_score}")
+    else:
+        check("且排在第一位", False, str(ids[:3]))
+
+
 def test_answer_without_model() -> None:
     print("\n== 无模型生成时返回本地证据摘要 ==")
     result = answer_enterprise_question("630DTXT806-300-000 装配包含哪些 BOM 零件？", top_k=3, generate=False)
@@ -96,6 +130,8 @@ def main() -> int:
     for test in (
         test_evidence_contract,
         test_identifier_match_priority,
+        test_ranking_is_stable_across_top_k,
+        test_numeric_supplier_code_is_recalled,
         test_answer_without_model,
         test_small_talk_returns_no_evidence,
     ):

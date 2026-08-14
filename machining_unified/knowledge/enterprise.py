@@ -33,6 +33,10 @@ logger = logging.getLogger(__name__)
 
 KB_VECTOR_DIR = ENTERPRISE_VECTOR_DIR
 
+# 向量候选窗口的下限。取值需覆盖当前证据规模（66 条），
+# 使小库上每条证据都拿到真实向量分，排序不再随 top_k 漂移。
+VECTOR_CANDIDATE_FLOOR = 128
+
 
 
 
@@ -203,8 +207,13 @@ def retrieve_enterprise_knowledge(question: str, top_k: int = 5) -> tuple[Enterp
     requested_part_ids = extract_part_ids(question)
     vector_scores: dict[str, float] = {}
     warning: str | None = None
+    # 向量候选窗口不能跟着 top_k 走。BM25 是全库算的，而窗口外的文档向量分记 0，
+    # 两种尺度混合会让同一条证据的名次随 top_k 变化——实测 110008089491 对应的
+    # BOM 条目在 top_k=8 时排第 1、top_k=5 时跌出前五。用户调整"返回数量"
+    # 只应改变截断长度，不应改变排序本身，因此窗口取一个与 top_k 无关的下限。
+    window = min(len(documents), max(top_k * 4, VECTOR_CANDIDATE_FLOOR))
     try:
-        for document, distance in enterprise_vector_store().similarity_search_with_score(question, k=min(len(documents), top_k * 4)):
+        for document, distance in enterprise_vector_store().similarity_search_with_score(question, k=window):
             vector_scores[document.metadata["source_id"]] = max(0.0, min(1.0, 1.0 - float(distance)))
     except (ChromaError, OSError, ValueError, RuntimeError) as error:
         # 已枚举：库目录缺失（FileNotFoundError）、SQLite/HNSW 文件损坏或被占用（OSError）、

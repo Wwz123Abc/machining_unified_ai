@@ -360,6 +360,11 @@ flowchart LR
   测不出上述缺陷——这正是它一度逃过回归的原因。
 - **CLIP 对中文无效。** `clip-ViT-B-32` 是英文图文模型，实测三条中文描述族级命中 0/9，
   因此文字模式下停用统一多模态开关。要支持中文需换 chinese-clip 并重建多模态库。
+- **混合打分里的候选窗口不能跟着 `top_k` 走。** 企业问答的 BM25 是全库计算的，
+  而向量分只在候选窗口内有值、窗口外记 0。若窗口取 `top_k * 4`，同一条证据会在
+  `top_k=8` 时排第 1、`top_k=5` 时跌出前五——用户拖动"返回数量"会改变排序本身。
+  现在窗口有与 `top_k` 无关的下限（`VECTOR_CANDIDATE_FLOOR`），
+  `tests/test_enterprise_answer.py` 锁住"小 top_k 结果必须是大 top_k 的前缀"。
 - `langchain-community` 当前会出现维护状态警告，但现有 `PyPDFLoader` 链路仍可运行；迁移依赖时要做完整文档加载回归。
 - Streamlit 的文件监视器会遍历 `transformers` 的惰性模块树，日志里会反复出现 `No module named 'torchvision'` 的 traceback。这是探测噪音，不影响功能；项目本身不需要 torchvision。
 

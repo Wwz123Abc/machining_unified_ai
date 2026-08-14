@@ -131,6 +131,11 @@ def render_semantic_results(
     if not items:
         st.warning("语义向量库没有返回模型。", icon=":material/search_off:")
         return
+    if all(hit.rerank_score is None for hit in items):
+        # 没有几何查询可供重排时（文字检索），这里就是裸 BGE 排序。
+        # 实测本库上它的分数几乎平局（同族查询相差不到 0.005），名次由噪声决定，
+        # 必须明说是补充召回，不能让用户当作可信排序。
+        st.caption("补充召回：本库上语义分区分度很低，名次仅供参考，请以下方工程混合排序为准。")
     for cell, hit, index in _grid(items):
         with cell, st.container(border=True):
             if hit.rerank_score is None:
