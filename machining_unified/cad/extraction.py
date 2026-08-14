@@ -292,8 +292,15 @@ def _derive_machining_candidates(features: dict[str, Any]) -> list[str]:
     return candidates
 
 
-def textify_cad_features(record: dict[str, Any]) -> str:
-    """将 CAD JSON 转为可用于混合检索的短文本。"""
+def textify_cad_features(record: dict[str, Any], *, include_identity: bool = True) -> str:
+    """将 CAD JSON 转为可用于混合检索的短文本。
+
+    ``include_identity=False`` 时省略 part_id。语义向量用于"以模型搜模型"，
+    而上传的查询模型没有图号（part_id 恒为 QUERY）。把图号写进文本会让
+    查询与文档产生固定偏移：实测 TEACH-CAD-001 的查询/文档余弦为 0.9589，
+    仅把 part_id 对齐后升至 0.9955，该模型因此被挤出自身查询的候选集。
+    按图号检索由 BM25 与企业问答的图号精确匹配承担，不依赖本文本。
+    """
 
     features = record.get("features", {})
     bbox = features.get("bounding_box") or {}
@@ -305,13 +312,19 @@ def textify_cad_features(record: dict[str, Any]) -> str:
         f"{key}={value}"
         for key, value in design.items()
         if value not in (None, [], "")
-    ) or "企业设计属性未标注"
+    )
+    # 没有已确认属性时整句省略，不写"未标注"占位。
+    # 该占位句出现在 21/24 的目录记录和每一次上传查询里，不携带任何信息，
+    # 却让少数带真实属性的模型在向量空间中被系统性推远——实测导致这些模型
+    # 在自身查询的语义候选集中被完全漏掉。
+    design_clause = f"；设计属性={design_text}" if design_text else ""
+    identity = f"part_id={record.get('part_id')}；" if include_identity else ""
     return (
-        f"part_id={record.get('part_id')}；CAD/3D 模型；"
+        f"{identity}CAD/3D 模型；"
         f"外包络尺寸（mm）={dimensions}；"
         f"实体数={features.get('solid_count')}；面数={features.get('face_count')}；"
         f"圆柱面数={features.get('surface_types', {}).get('cylinder')}；"
-        f"加工特征候选={candidates}；设计属性={design_text}。"
+        f"加工特征候选={candidates}{design_clause}。"
     )
 
 

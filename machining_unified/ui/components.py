@@ -92,12 +92,21 @@ def render_model_search_workbench() -> tuple[bool, str, str, Any, bool, Any]:
                 key="model_query_mode",
                 persist_state="session",
             ) or "STEP 模型"
+            # CLIP（clip-ViT-B-32）是英文图文模型，中文查询在其空间里基本是噪声：
+            # 实测三条中文描述的族级命中为 0/9。与其把噪声当作"补充结果"展示，
+            # 不如在文字模式下直接停用，并说明原因。
+            text_query_mode = query_mode == "文字描述"
             use_unified = st.toggle(
                 "启用 CLIP 统一多模态补充召回",
                 value=False,
                 key="use_unified_multimodal",
-                help="适合比较整体外形和图文语义；不会替代严格尺寸与特征检索。",
-            )
+                disabled=text_query_mode,
+                help=(
+                    "CLIP 是英文图文模型，中文描述在其向量空间中无有效信号，故文字模式下停用。"
+                    if text_query_mode
+                    else "适合比较整体外形和图文语义；不会替代严格尺寸与特征检索。"
+                ),
+            ) and not text_query_mode
             query_text = ""
             uploaded_file = None
             with st.form(f"model_search_{query_mode}", border=False):

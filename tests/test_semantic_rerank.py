@@ -22,6 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from machining_unified.cad.extraction import extract_step_features  # noqa: E402
 from machining_unified.cad.retrieval import load_cad_catalog, score_cad_similarity  # noqa: E402
 from machining_unified.retrieval.cad_rag import (  # noqa: E402
     get_vector_store,
@@ -57,23 +58,61 @@ def test_query_document_symmetry() -> None:
 
 
 def test_candidate_set_covers_self() -> None:
-    """重排只能在候选集内纠正名次，自身必须先进得来。"""
-    print("\n== 候选集覆盖率 ==")
+    """重排只能在候选集内纠正名次，自身必须先进得来。
+
+    必须走生产路径：用真实 STEP 文件经 ``extract_step_features(part_id="QUERY")``
+    生成查询记录。早期版本直接拿目录记录当查询，文本与自身文档恒等，
+    结构上不可能失败——它掩盖了一个真实缺陷：查询记录的 part_id 恒为 QUERY、
+    且查不到装配清单，导致带图号或带 BOM 的文档产生固定偏移，
+    4/24 的模型（3 个教学模型加 1 个装配体）被挤出自身查询的候选集。
+    """
+
+    print("\n== 候选集覆盖率（生产路径）==")
     catalog = load_cad_catalog()
     store = get_vector_store()
     covered = 0
+    positions: list[int] = []
+    missed: list[str] = []
     for record in catalog:
+        source = ROOT / str(record["source_file"])
+        if not source.is_file():
+            missed.append(f"{record['part_id']}(源文件缺失)")
+            continue
+        query = extract_step_features(source, part_id="QUERY", use_filename_hint=False)
         pairs = store.similarity_search_with_score(
-            semantic_document_text(record), k=TOP_K * SEMANTIC_CANDIDATE_FACTOR
+            semantic_document_text(query), k=TOP_K * SEMANTIC_CANDIDATE_FACTOR
         )
         ids = [str(document.metadata.get("part_id", "")) for document, _ in pairs]
-        if str(record["part_id"]) in ids:
+        part_id = str(record["part_id"])
+        if part_id in ids:
             covered += 1
+            positions.append(ids.index(part_id) + 1)
+        else:
+            missed.append(part_id)
+
     check(
         "全部模型都能进入自身查询的候选集",
         covered == len(catalog),
-        f"{covered}/{len(catalog)}",
+        f"{covered}/{len(catalog)}" + (f"  漏：{missed}" if missed else ""),
     )
+    if positions:
+        average = sum(positions) / len(positions)
+        check("命中时平均位次接近第 1", average < 1.5, f"{average:.2f}")
+
+
+def test_query_text_has_no_identity_fields() -> None:
+    """身份与来源字段不得进入语义文本——查询侧永远拿不到它们。"""
+    print("\n== 语义文本不含身份字段 ==")
+    record = next(r for r in load_cad_catalog() if str(r["part_id"]) == "630DTXT806-300-000")
+    text = semantic_document_text(record)
+    check("不含 part_id 键值", "part_id=" not in text)
+    check("不含真实图号", str(record["part_id"]) not in text)
+    check("不含 BOM 物料清单", "真实 BOM" not in text, text[-80:])
+
+    # 同一台几何、不同身份，语义文本必须完全一致。
+    twin = dict(record)
+    twin["part_id"] = "QUERY"
+    check("身份不同但几何相同的记录文本一致", semantic_document_text(twin) == text)
 
 
 def test_rerank_fixes_ranking() -> None:
@@ -155,6 +194,7 @@ def test_rerank_preserves_both_scores() -> None:
 def main() -> int:
     for test in (
         test_query_document_symmetry,
+        test_query_text_has_no_identity_fields,
         test_candidate_set_covers_self,
         test_rerank_fixes_ranking,
         test_rerank_preserves_both_scores,

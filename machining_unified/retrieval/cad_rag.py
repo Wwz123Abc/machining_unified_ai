@@ -73,8 +73,10 @@ def semantic_document_text(record: dict[str, Any]) -> str:
     semantics = features.get("geometry_semantics") or {}
     surfaces = features.get("surface_types", {})
     assembly = features.get("assembly_structure", {})
+    # 一律现算而不复用目录里的 search_text：后者带 part_id，
+    # 而上传查询的 part_id 恒为 QUERY，两侧会因此固定错开。
     lines = [
-        record.get("search_text") or textify_cad_features(record),
+        textify_cad_features(record, include_identity=False),
         f"形态：{semantics.get('shape')}；复杂度：{semantics.get('complexity')}；{semantics.get('radius_profile')}。",
         f"长径比 {semantics.get('aspect_ratio')}；扁平比 {semantics.get('thin_ratio')}。",
         f"拓扑：实体 {features.get('solid_count')}，面 {features.get('face_count')}，"
@@ -86,14 +88,10 @@ def semantic_document_text(record: dict[str, Any]) -> str:
             f"STEP 产品树：自由根 {assembly.get('free_shape_count')}，"
             f"装配根 {assembly.get('assembly_root_count')}。"
         )
-    manifest = assembly_manifest_for(str(record.get("part_id", "")))
-    if manifest:
-        components = "、".join(item["name"] for item in manifest["bom_items"][:8] if item["name"])
-        lines.append(f"真实 BOM：{manifest['component_count']} 个物料条目；典型部件：{components}。")
     # 延迟导入：engineering 在函数体内反向引用 cad_rag，模块级导入会成环。
     from machining_unified.knowledge.engineering import enriched_text
 
-    lines.append(enriched_text(record))
+    lines.append(enriched_text(record, include_identity=False))
     return "\n".join(lines)
 
 

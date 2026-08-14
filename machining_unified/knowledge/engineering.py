@@ -77,7 +77,7 @@ def engineering_profile(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def enriched_text(record: dict[str, Any]) -> str:
+def enriched_text(record: dict[str, Any], *, include_identity: bool = True) -> str:
     # 统一检索文本区分几何事实、推断候选和导入的 BOM 事实，
     # 避免把一种来源误认为另一种来源。
     profile = engineering_profile(record)
@@ -92,14 +92,18 @@ def enriched_text(record: dict[str, Any]) -> str:
         if assembly_structure.get("available")
         else "STEP 装配结构：未读取到可用产品树。"
     )
-    manifest = assembly_manifest_for(str(record.get("part_id", "")))
+    # 图号与 BOM 都属于来源信息：上传的查询模型没有图号、也查不到装配清单。
+    # 把它们写进语义文本会让查询与文档产生固定偏移，实测足以让装配体
+    # 被挤出自身查询的候选集（余弦 0.9080，对齐图号后为 1.0000）。
+    manifest = assembly_manifest_for(str(record.get("part_id", ""))) if include_identity else None
     bom_text = ""
     if manifest:
         component_preview = "、".join(item["name"] for item in manifest["bom_items"][:8] if item["name"])
         bom_text = f"真实 BOM：装配 {manifest['assembly_id']} 含 {manifest['component_count']} 个物料条目；典型部件：{component_preview}。"
+    heading = f"模型 {record.get('part_id')}：" if include_identity else "零件："
     return "\n".join(
         [
-            f"模型 {record.get('part_id')}：{profile['name']}；尺寸 {dimensions or '未提取'} mm。",
+            f"{heading}{profile['name']}；尺寸 {dimensions or '未提取'} mm。",
             f"形态：{geometry['shape']}；复杂度：{geometry['complexity']}；{geometry['radius_profile']}。",
             f"几何事实：实体 {features.get('solid_count')}，面 {features.get('face_count')}，圆柱面 {features.get('surface_types', {}).get('cylinder')}，平面 {features.get('surface_types', {}).get('plane')}。",
             assembly_text,
