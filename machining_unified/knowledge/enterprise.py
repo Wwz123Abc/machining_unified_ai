@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from dataclasses import replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -14,13 +15,16 @@ from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
+from chromadb.errors import ChromaError
 from pypdf import PdfReader
+from pypdf.errors import PyPdfError
 from rank_bm25 import BM25Plus
 
 from machining_unified.cad.extraction import textify_cad_features
 from machining_unified.cad.retrieval import load_cad_catalog
 from machining_unified.config.paths import ASSEMBLY_PACKAGES_DIR, ENTERPRISE_VECTOR_DIR, PROJECT_ROOT
 from machining_unified.config.retrieval_params import get_retrieval_params
+from machining_unified.dto import EnterpriseAnswer, EnterpriseEvidence
 from machining_unified.knowledge.part_ids import extract_part_ids, normalized_part_id
 from machining_unified.retrieval.cad_rag import get_embeddings
 
@@ -110,7 +114,8 @@ def _drawing_documents() -> list[Document]:
         try:
             reader = PdfReader(path)
             pages = [page.extract_text() or "" for page in reader.pages]
-        except Exception as error:
+        except (OSError, PyPdfError) as error:
+            # 已枚举的失败模式：文件读不了，或 PDF 结构损坏/加密（PyPdfError 是 pypdf 的根异常）。
             # 单份图纸损坏不能中断整个证据库构建，但必须留下可追溯记录，
             # 否则这份图纸会以“无法读取”的占位文本静默进入索引。
             logger.exception("工程图 PDF 解析失败", extra={"source_file": _relative_path(path)})
@@ -186,8 +191,12 @@ def _bm25_scores(question: str, documents: tuple[Document, ...]) -> dict[str, fl
     }
 
 
-def retrieve_enterprise_knowledge(question: str, top_k: int = 5) -> list[dict[str, Any]]:
-    """融合真实资料的向量语义与关键词检索，并保留每条来源。"""
+def retrieve_enterprise_knowledge(question: str, top_k: int = 5) -> tuple[EnterpriseEvidence, ...]:
+    """融合真实资料的向量语义与关键词检索，并保留每条来源。
+
+    引用编号 ``S#`` 在此按最终排名直接赋予：证据对象是不可变的，
+    不能等到生成回答时再就地写入，否则同一份证据在不同调用间会互相污染。
+    """
     documents = enterprise_documents()
     weights = get_retrieval_params().enterprise
     bm25_scores = _bm25_scores(question, documents)
@@ -197,9 +206,10 @@ def retrieve_enterprise_knowledge(question: str, top_k: int = 5) -> list[dict[st
     try:
         for document, distance in enterprise_vector_store().similarity_search_with_score(question, k=min(len(documents), top_k * 4)):
             vector_scores[document.metadata["source_id"]] = max(0.0, min(1.0, 1.0 - float(distance)))
-    except Exception as error:
-        # 向量库缺失或损坏时降级为纯 BM25。降级会显著改变召回质量，
-        # 必须同时上报给界面（warning）和日志（可追溯），不能只提示用户。
+    except (ChromaError, OSError, ValueError, RuntimeError) as error:
+        # 已枚举：库目录缺失（FileNotFoundError）、SQLite/HNSW 文件损坏或被占用（OSError）、
+        # Chroma 自身错误（ChromaError 是其根异常）、维度不匹配等参数错误。
+        # 降级为纯 BM25 会显著改变召回质量，必须同时上报界面（warning）与日志（可追溯）。
         logger.exception(
             "企业知识库向量检索不可用，已降级为关键词检索",
             extra={"vector_dir": str(KB_VECTOR_DIR), "document_count": len(documents)},
@@ -239,7 +249,21 @@ def retrieve_enterprise_knowledge(question: str, top_k: int = 5) -> list[dict[st
             }
         )
     # 精确图号是企业资料查询中最强的证据，应优先于泛化的语义相似度。
-    return sorted(results, key=lambda item: (item["identifier_match"], item["score"]), reverse=True)[:top_k]
+    ranked = sorted(results, key=lambda item: (item["identifier_match"], item["score"]), reverse=True)[:top_k]
+    return tuple(
+        EnterpriseEvidence(
+            citation=f"S{index}",
+            score=item["score"],
+            vector_score=item["vector_score"],
+            lexical_score=item["lexical_score"],
+            identifier_match=item["identifier_match"],
+            excerpt=item["excerpt"],
+            excerpt_truncated=item["excerpt_truncated"],
+            warning=item["warning"],
+            document=item["document"],
+        )
+        for index, item in enumerate(ranked, start=1)
+    )
 
 
 def _history_text(history: list[dict[str, Any]] | None) -> str:
@@ -254,14 +278,13 @@ def _is_small_talk(question: str) -> bool:
     return compact in greetings
 
 
-def _knowledge_scope_reply() -> dict[str, Any]:
+def _knowledge_scope_reply() -> EnterpriseAnswer:
     """对问候类消息说明知识库范围，不进行无依据的资料召回。"""
-    return {
-        "answer": "你好！这里是企业机械知识库。你可以询问零件图号、材料、表面处理、BOM、工程图要求或装配资料。",
-        "evidence": [],
-        "generated": False,
-        "warning": None,
-    }
+    return EnterpriseAnswer(
+        answer="你好！这里是企业机械知识库。你可以询问零件图号、材料、表面处理、BOM、工程图要求或装配资料。",
+        evidence=(),
+        generated=False,
+    )
 
 
 def answer_enterprise_question(
@@ -269,23 +292,20 @@ def answer_enterprise_question(
     top_k: int = 5,
     history: list[dict[str, Any]] | None = None,
     generate: bool = True,
-) -> dict[str, Any]:
+) -> EnterpriseAnswer:
     """基于企业资料证据回答；无模型服务时返回可核对的本地证据摘要。"""
     if _is_small_talk(question):
         return _knowledge_scope_reply()
     evidence = retrieve_enterprise_knowledge(question, top_k=top_k)
     if not evidence:
-        return {"answer": "企业知识库中没有可用资料。", "evidence": [], "generated": False}
-    for index, item in enumerate(evidence, start=1):
-        item["citation"] = f"S{index}"
+        return EnterpriseAnswer(answer="企业知识库中没有可用资料。", evidence=(), generated=False)
     context = "\n\n".join(
-        f"[{item['citation']}] 原始来源编号：{item['document'].metadata['source_id']}。"
-        f"{item['document'].page_content}"
+        f"[{item.citation}] 原始来源编号：{item.source_id}。{item.document.page_content}"
         for item in evidence
     )
     load_dotenv(PROJECT_ROOT / ".env")
     api_key = os.getenv("DEEPSEEK_API_KEY")
-    warning = next((item["warning"] for item in evidence if item.get("warning")), None)
+    warning = next((item.warning for item in evidence if item.warning), None)
     if api_key and generate:
         try:
             prompt = ChatPromptTemplate.from_messages(
@@ -308,50 +328,52 @@ def answer_enterprise_question(
             )).invoke({"question": question, "context": context, "history": _history_text(history)})
             logger.info(
                 "企业资料问答生成完成",
-                extra={"mode": "strict", "evidence_count": len(evidence), "identifier_hits": sum(1 for i in evidence if i["identifier_match"])},
+                extra={"mode": "strict", "evidence_count": len(evidence), "identifier_hits": sum(1 for i in evidence if i.identifier_match)},
             )
-            return {
-                "answer": response.content if isinstance(response.content, str) else str(response.content),
-                "evidence": evidence,
-                "generated": True,
-                "warning": warning,
-            }
-        except Exception as error:
-            # DeepSeek 不可达时退回本地证据摘要。这是外部依赖故障，
-            # 必须记录，否则线上只会看到“回答质量突然变差”而查不到原因。
+            return EnterpriseAnswer(
+                answer=response.content if isinstance(response.content, str) else str(response.content),
+                evidence=evidence,
+                generated=True,
+                warning=warning,
+            )
+        except Exception as error:  # noqa: BLE001 - 外部服务边界，见下方说明
+            # 这里刻意保留宽泛捕获：调用跨越 langchain-openai、openai SDK、HTTP 栈与
+            # DeepSeek 服务端，失败模式不可枚举（超时、限流、鉴权、协议变更、响应格式变化）。
+            # 收窄类型的代价是漏掉一种就让整页崩溃，而这条链路的正确行为是退回本地证据摘要。
+            # 代价由 logger.exception 的完整堆栈补偿，可追溯性不受影响。
+            # 注：若要按类型区分处理，需把 openai 重新提升为直接依赖（见 requirements.txt）。
             logger.exception(
                 "严谨模式模型生成失败，已退回本地证据摘要",
                 extra={"mode": "strict", "base_url": os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"), "evidence_count": len(evidence)},
             )
             warning = "；".join(filter(None, [warning, f"模型生成不可用，已返回资料摘要：{error}"]))
 
-    sources = "\n".join(
-        f"- [{item['document'].metadata['source_id']}] {item['document'].metadata['source_kind']}：{item['document'].metadata['title']}"
-        for item in evidence
+    sources = "\n".join(f"- [{item.source_id}] {item.source_kind}：{item.title}" for item in evidence)
+    return EnterpriseAnswer(
+        answer=f"已检索到以下企业资料，请依据来源核对：\n{sources}",
+        evidence=evidence,
+        generated=False,
+        warning=warning,
     )
-    return {
-        "answer": f"已检索到以下企业资料，请依据来源核对：\n{sources}",
-        "evidence": evidence,
-        "generated": False,
-        "warning": warning,
-    }
 
 
-def answer_assistant_question(question: str, top_k: int = 5, history: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def answer_assistant_question(
+    question: str, top_k: int = 5, history: list[dict[str, Any]] | None = None
+) -> EnterpriseAnswer:
     """企业 AI 助手模式：资料优先，同时允许通用解释与建议。"""
     if _is_small_talk(question):
         return _knowledge_scope_reply()
     strict_result = answer_enterprise_question(question, top_k=top_k, history=history, generate=False)
-    evidence = strict_result["evidence"]
-    context = "\n\n".join(
-        f"[{item.get('citation', 'S?')}] {item['document'].page_content}" for item in evidence
-    )
+    evidence = strict_result.evidence
+    context = "\n\n".join(f"[{item.citation}] {item.document.page_content}" for item in evidence)
     load_dotenv(PROJECT_ROOT / ".env")
     api_key = os.getenv("DEEPSEEK_API_KEY")
     if not api_key:
-        strict_result["warning"] = "未配置模型服务，AI 助手模式已返回严格知识库结果。"
-        strict_result["assistant_mode"] = True
-        return strict_result
+        return replace(
+            strict_result,
+            warning="未配置模型服务，AI 助手模式已返回严格知识库结果。",
+            assistant_mode=True,
+        )
     try:
         prompt = ChatPromptTemplate.from_messages(
             [
@@ -368,18 +390,20 @@ def answer_assistant_question(question: str, top_k: int = 5, history: list[dict[
             base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"), temperature=0.3,
         )).invoke({"question": question, "context": context, "history": _history_text(history)})
         logger.info("AI 助手回答生成完成", extra={"mode": "assistant", "evidence_count": len(evidence)})
-        return {
-            "answer": response.content if isinstance(response.content, str) else str(response.content),
-            "evidence": evidence,
-            "generated": True,
-            "assistant_mode": True,
-            "warning": strict_result.get("warning"),
-        }
-    except Exception as error:
+        return EnterpriseAnswer(
+            answer=response.content if isinstance(response.content, str) else str(response.content),
+            evidence=evidence,
+            generated=True,
+            assistant_mode=True,
+            warning=strict_result.warning,
+        )
+    except Exception as error:  # noqa: BLE001 - 同上，外部服务边界
         logger.exception(
             "AI 助手模型生成失败，已退回严谨知识库结果",
             extra={"mode": "assistant", "base_url": os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"), "evidence_count": len(evidence)},
         )
-        strict_result["warning"] = f"AI 助手生成不可用，已返回严格知识库结果：{error}"
-        strict_result["assistant_mode"] = True
-        return strict_result
+        return replace(
+            strict_result,
+            warning=f"AI 助手生成不可用，已返回严格知识库结果：{error}",
+            assistant_mode=True,
+        )

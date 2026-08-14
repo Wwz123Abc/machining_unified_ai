@@ -107,7 +107,9 @@ def build_unified_index(records: list[dict[str, Any]]) -> dict[str, Any]:
             except PermissionError as error:
                 raise RuntimeError("无法替换统一向量库：请关闭占用该 SQLite 文件的数据库工具后重试。") from error
         temporary_dir.replace(UNIFIED_VECTOR_DIR)
-    except Exception:
+    except Exception:  # noqa: BLE001 - 清理后原样重抛，不吞任何异常
+        # 无论何种失败都必须删掉半成品临时目录，否则会残留在 vector_stores 旁边；
+        # 随后 raise 保持原始异常与堆栈不变，调用方看到的仍是真实错误。
         shutil.rmtree(temporary_dir, ignore_errors=True)
         raise
     manifest = {

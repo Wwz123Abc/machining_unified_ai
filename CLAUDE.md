@@ -46,25 +46,42 @@ C:\Users\w\PycharmProjects\machining_ai_workspace\step_model_retrieval
 
 `app.py` 只负责页面编排、会话状态和调用服务层。
 
-```text
-Streamlit app.py
-├─ 模型检索
-│  └─ services/model_search.py
-│     ├─ cad/extraction.py             STEP 几何事实（OCP + XCAF）
-│     ├─ cad/retrieval.py              可解释几何相似度
-│     ├─ retrieval/cad_rag.py          BGE 中文语义召回
-│     ├─ knowledge/engineering.py      BM25/类别路由/混合排序/图谱扩展
-│     ├─ cad/visual.py                 图片检索
-│     └─ retrieval/multimodal.py       可选 CLIP 统一补充召回
-└─ 企业资料问答
-   └─ knowledge/enterprise.py
-      ├─ 图号精确匹配（knowledge/part_ids.py）与 BM25
-      ├─ Chroma enterprise
-      └─ DeepSeek 严谨回答/助手回答
+```mermaid
+flowchart TD
+    U([用户]) --> APP[app.py<br/>页面编排 / 会话状态]
+
+    APP -->|模型检索| SVC[services/model_search.py<br/>用例编排 + 包装 DTO]
+    APP -->|企业资料问答| ENT[knowledge/enterprise.py]
+
+    SVC --> EXT[cad/extraction.py<br/>OCP + XCAF 几何事实]
+    SVC --> GEO[cad/retrieval.py<br/>可解释加权相似度]
+    SVC --> RAG[retrieval/cad_rag.py<br/>BGE 中文语义]
+    SVC --> ENG[knowledge/engineering.py<br/>BM25 / 类别路由 / 混合排序]
+    SVC --> VIS[cad/visual.py<br/>视觉逐模型比对]
+    SVC --> MM[retrieval/multimodal.py<br/>CLIP 补充召回 · 可选]
+
+    GEO --> CAT[(cad_models.json<br/>CAD 目录)]
+    RAG --> VC[(Chroma<br/>cad_semantic)]
+    ENG --> VC
+    ENG --> CAT
+    MM --> VM[(Chroma<br/>multimodal)]
+
+    ENT --> PID[knowledge/part_ids.py<br/>图号标准化]
+    ENT --> VE[(Chroma<br/>enterprise)]
+    ENT --> LLM[DeepSeek<br/>严谨 / 助手]
+
+    SVC --> DTO[dto.py<br/>类型化结果]
+    ENT --> DTO
+    DTO --> SS[[st.session_state]]
+    SS --> UI[ui/retrieval_components.py<br/>按证据类型分别展示]
+    UI --> U
 ```
 
-检索结果保存在 `st.session_state["model_search"]`：结果只在提交那一次重跑里产生，不存会话状态的话，
-调整返回数量或切换工作区都会把结果整块清空。
+结果先落 `st.session_state`、再由 UI 渲染，是刻意的闭环：检索只在**提交那一次重跑**里执行，
+后续任何交互（改返回数量、切查询方式）都只重放会话状态，不会清空结果也不会重复检索。
+
+各分支的分数含义不同（几何是代码加权分、BGE 是余弦、CLIP 是另一空间的余弦），
+因此 DTO 按分支分成不同类型，UI 分区展示，**不做合并排序**。
 
 页面组件位于：
 
@@ -73,6 +90,42 @@ Streamlit app.py
 - `machining_unified/ui/styles.py`：加载工业风 CSS；
 - `assets/industrial.css`：主样式；
 - `.streamlit/config.toml`：Streamlit 深色主题。
+
+### 降级路径与异常处理约定
+
+每条外部依赖失败都有明确的降级目标，且**全部会写结构化日志**（`logger.exception`），
+不存在静默降级：
+
+```mermaid
+flowchart TD
+    Q[一次检索请求] --> V{Chroma 向量库可用?}
+    V -->|是| E{EnsembleRetriever 可用?}
+    V -->|否| BM[降级：BM25 + 类别规则<br/>界面显示 warning]
+    E -->|是| FULL[完整混合排序]
+    E -->|否| IND[降级：独立加权混排]
+    BM --> B2{BM25 可用?}
+    B2 -->|否| FAM[再降级：仅类别相似度]
+
+    A[企业资料问答] --> VE{enterprise 库可用?}
+    VE -->|否| LEX[降级：纯 BM25<br/>界面显示 warning]
+    VE -->|是| GEN{DeepSeek 可达?}
+    GEN -->|否| SUM[降级：本地证据摘要<br/>仍带 S# 引用与来源]
+
+    S[STEP 解析] --> OCP{OCP 可用且解析成功?}
+    OCP -->|否| TXT[降级：STEP 文本摘要<br/>标记 geometry_confidence=low]
+
+    I[图片检索] --> CLIP{CLIP 权重可加载?}
+    CLIP -->|否| FP[降级：离线轮廓指纹]
+```
+
+异常捕获的收窄原则（`except Exception` 只允许出现在下列三处，且必须写明理由）：
+
+| 场景 | 做法 | 理由 |
+|---|---|---|
+| 故障模式可枚举（文件 I/O、PDF、OCCT、Chroma） | **收窄**到具体类型 | 未列出的异常属于代码缺陷，应当暴露而非降级 |
+| UI 请求边界（`app.py` 三条检索分支） | 保留宽泛 + `logger.exception` | 单次查询失败不得让整页崩溃 |
+| 外部服务边界（DeepSeek 调用） | 保留宽泛 + `logger.exception` | 跨 SDK/HTTP/服务端，失败模式不可枚举 |
+| 清理后重抛（索引构建临时目录） | 保留宽泛 + `raise` | 必须无条件清理，且不改变原始异常 |
 
 ## 4. Python 包职责
 
@@ -179,15 +232,32 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 .\.venv\Scripts\python.exe scripts\check_databases.py
 ```
 
-顺序含义：
+顺序不是习惯，是依赖关系——三套索引都从 CAD 目录派生：
 
-1. 扫描 STEP，提取 OCP/XCAF 几何，从 BOM 与人工标注清单回填设计属性，生成 CAD 目录；
-2. 根据 CAD 目录重建 BGE CAD 语义库；
-3. 根据 STEP、BOM 和工程图重建企业证据库；
-4. 根据 CAD 目录重建 CLIP 多模态库；
-5. 只读核对 JSON、来源文件、collection 和记录数。
+```mermaid
+flowchart LR
+    STEP[/data/enterprise/cad_samples<br/>STEP 源文件/] --> B1
+    BOM[/assembly_manifest.json<br/>BOM 条目/] --> B1
+    PM[/part_manifest.json<br/>人工标注/] --> B1
 
-第 1 步回填设计属性后会重算 `search_text`，因此后面三个索引必须一起重建，不能只跑第 1 步。
+    B1[build_cad_catalog.py<br/>几何提取 + 设计属性回填<br/>重算 search_text] --> CAT[(cad_models.json)]
+
+    CAT --> B2[build_vector_index.py] --> V1[(cad_semantic)]
+    CAT --> B3[build_enterprise_kb.py] --> V2[(enterprise)]
+    BOM --> B3
+    DWG[/工程图 PDF/] --> B3
+    CAT --> B4[build_unified_index.py] --> V3[(multimodal)]
+
+    V1 --> CK[check_databases.py<br/>只读一致性核对]
+    V2 --> CK
+    V3 --> CK
+    CAT --> CK
+    CK --> OK{{退出码 0}}
+```
+
+关键约束：第 1 步回填设计属性后会**重算 `search_text`**，而后面三个索引的文本与向量都来自它。
+因此不能只跑第 1 步——那会让目录与三套索引不一致，且 `check_databases.py` 未必能发现
+（它核对数量与来源文件，不比对文本内容）。
 
 不要只移动数据目录而不重建索引，因为 Chroma metadata 中保存了 `source_file`，旧路径会导致证据链接失效。
 

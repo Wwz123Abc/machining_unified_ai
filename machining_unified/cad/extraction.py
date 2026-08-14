@@ -13,6 +13,15 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# OCP 的具体符号在函数内惰性导入，以便未安装时仍能走文本摘要降级路径。
+# 但 except 子句需要在模块级拿到异常类型，因此这里做一次受保护导入；
+# 没有 OCP 时用占位类型，使 except 子句语法成立且永远不会命中。
+try:  # noqa: SIM105
+    from OCP.Standard import Standard_Failure
+except ImportError:  # pragma: no cover - 仅在未安装 cadquery-ocp 的环境成立
+    class Standard_Failure(Exception):  # type: ignore[no-redef]
+        """OCP 缺失时的占位异常类型。"""
+
 
 # 将 STEP 直接测得的事实与后续推导的工程候选分开保存。
 # 本层绝不虚构缺失的工程图元数据。
@@ -142,7 +151,9 @@ def _extract_xcaf_assembly_metadata(step_path: Path) -> dict[str, Any]:
         tool.GetFreeShapes(roots)
         assembly_roots = sum(1 for index in range(1, roots.Length() + 1) if XCAFDoc_ShapeTool.IsAssembly_s(roots.Value(index)))
         return {"available": True, "free_shape_count": roots.Length(), "assembly_root_count": assembly_roots}
-    except Exception as error:
+    except (ImportError, OSError, ValueError, RuntimeError, Standard_Failure) as error:
+        # 产品树读取失败不影响 B-Rep 几何事实，记录原因即可继续。
+        logger.debug("STEP 产品树读取失败", extra={"source_file": str(step_path), "reason": str(error)})
         return {"available": False, "reason": str(error)}
 
 
@@ -300,9 +311,11 @@ def extract_step_features(
         # OCP 缺失是部署问题而非数据问题：整个目录都会退化为低置信度文本摘要。
         logger.error("OCP 不可用，STEP 解析退化为文本摘要", extra={"source_file": str(path), "part_id": part_id})
         geometry = _extract_step_text_summary(path)
-    except Exception as error:
-        # 单个 STEP 解析失败只影响该条记录，记录里保留 warnings 供审计，
-        # 同时写日志，避免整批导入时失败被淹没在正常输出里。
+    except (OSError, ValueError, RuntimeError, Standard_Failure) as error:
+        # 已枚举的失败模式：文件读不了、STEP 内容非法（_extract_with_ocp 抛 ValueError）、
+        # OCCT 内核报错（Standard_Failure）。单条失败只影响该记录，
+        # 记录里保留 warnings 供审计，同时写日志，避免整批导入时被正常输出淹没。
+        # 此处刻意不捕获其余异常：那属于代码缺陷，应当中断构建而不是产出一条降级记录。
         logger.exception("OCP 几何解析失败，已退化为文本摘要", extra={"source_file": str(path), "part_id": part_id})
         geometry = _extract_step_text_summary(path)
         geometry.setdefault("warnings", []).append(f"OCP 几何解析失败：{error}")

@@ -98,7 +98,7 @@ if workspace == "模型检索":
                     "mode": query_mode,
                     "results": results,
                     "query_mesh": query_mesh,
-                    "explanation": generate_rag_explanation(results["query"], results["semantic"]),
+                    "explanation": generate_rag_explanation(results.query, results.semantic),
                 }
                 logger.info(
                     "STEP 检索完成",
@@ -107,9 +107,9 @@ if workspace == "模型检索":
                         "file_name": getattr(uploaded_file, "name", None),
                         "top_k": top_k,
                         "use_unified": use_unified,
-                        "geometry_hits": len(results["geometry"]),
-                        "semantic_hits": len(results["semantic"]),
-                        "unified_hits": len(results["unified"]),
+                        "geometry_hits": len(results.geometry),
+                        "semantic_hits": len(results.semantic),
+                        "unified_hits": len(results.unified),
                         "triangle_count": query_mesh["triangle_count"],
                         "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
                     },
@@ -149,13 +149,13 @@ if workspace == "模型检索":
                         "query_length": len(query_text.strip()),
                         "top_k": top_k,
                         "use_unified": use_unified,
-                        "semantic_hits": len(results["semantic"]),
-                        "hybrid_hits": len(results["hybrid"]),
-                        "families": results["families"],
+                        "semantic_hits": len(results.semantic),
+                        "hybrid_hits": len(results.hybrid),
+                        "families": list(results.families),
                         "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
                     },
                 )
-            except Exception as error:
+            except Exception as error:  # noqa: BLE001 - UI 请求边界，同 STEP 分支说明
                 st.session_state.model_search = None
                 logger.exception(
                     "文字检索失败",
@@ -184,12 +184,12 @@ if workspace == "模型检索":
                         "image_size": list(image.size),
                         "top_k": top_k,
                         "use_unified": use_unified,
-                        "visual_hits": len(results["visual"]),
-                        "visual_method": results["visual"][0]["method"] if results["visual"] else None,
+                        "visual_hits": len(results.visual),
+                        "visual_method": results.visual[0].method if results.visual else None,
                         "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
                     },
                 )
-            except Exception as error:
+            except Exception as error:  # noqa: BLE001 - UI 请求边界，同 STEP 分支说明
                 st.session_state.model_search = None
                 logger.exception(
                     "图片检索失败",
@@ -209,24 +209,24 @@ if workspace == "模型检索":
         if query_mode == "STEP 模型":
             st.markdown("#### 查询模型 3D 预览")
             render_step_payload(search_state["query_mesh"], key="query-step-model")
-            retrieval_components.render_geometry_results(results["geometry"])
-            retrieval_components.render_semantic_results(results["semantic"], catalog_by_id, "step-semantic")
-            if results["unified"]:
-                retrieval_components.render_unified_results(results["unified"], catalog_by_id, "step-unified")
+            retrieval_components.render_geometry_results(results.geometry)
+            retrieval_components.render_semantic_results(results.semantic, catalog_by_id, "step-semantic")
+            if results.unified:
+                retrieval_components.render_unified_results(results.unified, catalog_by_id, "step-unified")
             if search_state["explanation"]:
                 with st.container(border=True):
                     st.markdown("#### 基于检索证据的差异说明")
                     st.write(search_state["explanation"])
         elif query_mode == "文字描述":
-            retrieval_components.render_semantic_results(results["semantic"], catalog_by_id, "text-semantic")
-            retrieval_components.render_hybrid_results(results["hybrid"], results["families"])
-            if results["unified"]:
-                retrieval_components.render_unified_results(results["unified"], catalog_by_id, "text-unified")
+            retrieval_components.render_semantic_results(results.semantic, catalog_by_id, "text-semantic")
+            retrieval_components.render_hybrid_results(results.hybrid, results.families)
+            if results.unified:
+                retrieval_components.render_unified_results(results.unified, catalog_by_id, "text-unified")
         else:
             st.image(search_state["query_image"], caption="查询图片", width=320)
-            retrieval_components.render_image_results(results["visual"])
-            if results["unified"]:
-                retrieval_components.render_unified_results(results["unified"], catalog_by_id, "image-unified")
+            retrieval_components.render_image_results(results.visual)
+            if results.unified:
+                retrieval_components.render_unified_results(results.unified, catalog_by_id, "image-unified")
 
 
 else:
@@ -298,17 +298,17 @@ else:
                     st.info("企业资料事实带 [S#] 引用；其余内容必须标记为通用建议或推测。")
                     result = answer_assistant_question(prompt, top_k=top_k, history=st.session_state.chat_messages)
                 status.update(label="回答已生成", state="complete", expanded=False)
-            streamed_answer = st.write_stream(stream_answer_text(result["answer"]))
-            if result.get("warning"):
-                st.warning(result["warning"], icon=":material/warning:")
+            streamed_answer = st.write_stream(stream_answer_text(result.answer))
+            if result.warning:
+                st.warning(result.warning, icon=":material/warning:")
             with st.expander("查看证据来源", expanded=True):
-                retrieval_components.render_enterprise_evidence(result["evidence"])
+                retrieval_components.render_enterprise_evidence(result.evidence)
 
-        source_refs = [item["document"].metadata["source_id"] for item in result["evidence"]]
+        source_refs = [item.source_id for item in result.evidence]
         assistant_message = {
             "role": "assistant",
             "content": streamed_answer,
-            "evidence": result["evidence"],
+            "evidence": result.evidence,
             "mode": current_mode,
             "source_refs": source_refs,
         }

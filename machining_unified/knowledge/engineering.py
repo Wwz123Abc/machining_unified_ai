@@ -9,6 +9,8 @@ from collections import defaultdict
 from functools import lru_cache
 from typing import Any
 
+from chromadb.errors import ChromaError
+
 from machining_unified.cad.extraction import classify_part_family, geometry_semantics
 from machining_unified.cad.retrieval import load_cad_catalog
 from machining_unified.config.retrieval_params import get_retrieval_params
@@ -233,7 +235,8 @@ def _bm25_rank(query: str, records: list[dict[str, Any]]) -> dict[str, float]:
         minimum, maximum = min(values, default=0.0), max(values, default=0.0)
         span = maximum - minimum
         return {record["part_id"]: ((value - minimum) / span if span else 0.0) for record, value in zip(records, values)}
-    except Exception:
+    except (ImportError, ValueError, ZeroDivisionError, TypeError):
+        # 已枚举：rank_bm25 未安装、语料为空或分词结果非法。
         # 此前是完全静默的降级：BM25 失效后改用类别相似度顶替词法分，
         # 排序质量明显下降却不留任何痕迹。必须记录。
         logger.exception("BM25 词法排序不可用，已降级为类别相似度", extra={"record_count": len(records)})
@@ -268,13 +271,16 @@ def hybrid_retrieve(query: str, top_k: int = 5, candidates: list[dict[str, Any]]
 
         for document, distance in get_vector_store().similarity_search_with_score(query, k=max(top_k * 5, len(records))):
             vector_scores[document.metadata.get("part_id", "")] = max(0.0, min(1.0, 1.0 - float(distance)))
-    except Exception as error:
+    except (ChromaError, OSError, ValueError, RuntimeError) as error:
+        # 与企业证据库同一组失败模式：库缺失、文件损坏或被占用、Chroma 内部错误。
         logger.exception("CAD 向量检索不可用，已降级为 BM25 与知识规则", extra={"record_count": len(records)})
         retrieval_warnings.append(f"向量检索不可用，已降级为 BM25 与知识规则：{error}")
     bm25_scores = _bm25_rank(query, records)
     try:
         ensemble_scores = _langchain_ensemble_rank(query, records)
-    except Exception as error:
+    except (ImportError, ChromaError, OSError, ValueError, RuntimeError, KeyError) as error:
+        # EnsembleRetriever 跨 langchain-classic / langchain-community 两个包，
+        # 版本漂移时最常见的就是 ImportError 与 KeyError；其余同向量库失败模式。
         logger.exception("EnsembleRetriever 不可用，已使用独立混合排序", extra={"record_count": len(records)})
         ensemble_scores = {}
         retrieval_warnings.append(f"LangChain EnsembleRetriever 不可用，已使用独立混合排序：{error}")

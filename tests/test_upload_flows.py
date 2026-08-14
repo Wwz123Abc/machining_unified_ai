@@ -43,6 +43,18 @@ def check(label: str, condition: bool, detail: str = "") -> bool:
     return condition
 
 
+def _is_frozen(obj: object) -> bool:
+    """结果对象会进入 session_state 跨重跑复用，必须禁止就地改写。"""
+    try:
+        object.__setattr__  # noqa: B018 - 仅为可读性
+        setattr(obj, "score", 0.0)
+    except AttributeError:
+        return True
+    except Exception:
+        return True
+    return False
+
+
 def _assert_no_exception(at: AppTest, stage: str) -> bool:
     """AppTest 会把脚本内未捕获的异常收集到 at.exception。"""
     messages = [element.value for element in at.exception]
@@ -100,10 +112,16 @@ def test_step_upload_flow() -> None:
     check("模式标记为 STEP 模型", state["mode"] == "STEP 模型", repr(state["mode"]))
 
     results = state["results"]
-    check("几何相似结果非空", len(results["geometry"]) > 0, f"{len(results['geometry'])} 条")
-    check("语义召回结果非空", len(results["semantic"]) > 0, f"{len(results['semantic'])} 条")
-    check("查询记录 part_id 为 QUERY", results["query"]["part_id"] == "QUERY")
-    check("几何解析器为 OCP", results["query"]["features"]["parser"] == "OCP")
+    check("几何相似结果非空", len(results.geometry) > 0, f"{len(results.geometry)} 条")
+    check("语义召回结果非空", len(results.semantic) > 0, f"{len(results.semantic)} 条")
+    check("查询记录 part_id 为 QUERY", results.query["part_id"] == "QUERY")
+    check("几何解析器为 OCP", results.query["features"]["parser"] == "OCP")
+    # DTO 契约：字段改名会在这里直接失败，而不是页面上静默少一块内容。
+    first = results.geometry[0]
+    check("几何结果为 GeometryHit 且字段可用",
+          isinstance(first.part_id, str) and isinstance(first.score, float) and isinstance(first.reasons, tuple),
+          f"{type(first).__name__}")
+    check("几何结果不可变", _is_frozen(first))
 
     # 这是 W6 的核心：临时文件在 finally 中被删除，网格必须已经取出并随结果留存，
     # 否则重跑时 render_step_payload 会拿不到数据。
@@ -147,13 +165,13 @@ def test_image_upload_flow() -> None:
     if not check("session_state.model_search 已写入", state is not None):
         return
     check("模式标记为零件图片", state["mode"] == "零件图片", repr(state["mode"]))
-    check("视觉结果非空", len(state["results"]["visual"]) > 0, f"{len(state['results']['visual'])} 条")
+    check("视觉结果非空", len(state["results"].visual) > 0, f"{len(state['results'].visual)} 条")
     check("查询图已随结果保存", state["query_image"] is not None)
     check("查询图尺寸可读", tuple(state["query_image"].size) > (0, 0), str(state["query_image"].size))
 
     at = at.run(timeout=TIMEOUT)
     _assert_no_exception(at, "图片非提交重跑")
-    check("重跑后视觉结果仍在", at.session_state["model_search"]["results"]["visual"], "")
+    check("重跑后视觉结果仍在", bool(at.session_state["model_search"]["results"].visual))
 
 
 def test_rejects_missing_upload() -> None:

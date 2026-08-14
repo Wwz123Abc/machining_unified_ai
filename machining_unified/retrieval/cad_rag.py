@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
-from typing import Any
+from typing import Any, Sequence
 
 from dotenv import load_dotenv
 from langchain_chroma import Chroma
@@ -15,6 +15,7 @@ from langchain_openai import ChatOpenAI
 
 from machining_unified.cad.extraction import textify_cad_features
 from machining_unified.config.paths import CAD_VECTOR_DIR, PROJECT_ROOT
+from machining_unified.dto import SemanticHit
 from machining_unified.knowledge.engineering import enriched_text
 
 
@@ -95,7 +96,7 @@ def retrieve_cad_rag_by_text(question: str, top_k: int = 5) -> list[dict[str, An
     ]
 
 
-def generate_rag_explanation(query_record: dict[str, Any], results: list[dict[str, Any]]) -> str | None:
+def generate_rag_explanation(query_record: dict[str, Any], results: Sequence[SemanticHit]) -> str | None:
     """有 DeepSeek Key 时生成说明；没有 Key 时返回 None，不影响检索。"""
     load_dotenv(PROJECT_ROOT / ".env")
     api_key = os.getenv("DEEPSEEK_API_KEY")
@@ -105,7 +106,7 @@ def generate_rag_explanation(query_record: dict[str, Any], results: list[dict[st
     # 模型只接收已检索到的文档，建立生成说明的证据边界，
     # 而不是把整个 CAD 目录交给模型自由发挥。
     context = "\n\n".join(
-        f"[相似资料 {index}] 相似度={item['score']:.3f}\n{item['document'].page_content}"
+        f"[相似资料 {index}] 相似度={item.score:.3f}\n{item.document.page_content}"
         for index, item in enumerate(results, start=1)
     )
     prompt = ChatPromptTemplate.from_messages(
