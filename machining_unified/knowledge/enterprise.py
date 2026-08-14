@@ -33,10 +33,6 @@ logger = logging.getLogger(__name__)
 
 KB_VECTOR_DIR = ENTERPRISE_VECTOR_DIR
 
-# 向量候选窗口的下限。取值需覆盖当前证据规模（66 条），
-# 使小库上每条证据都拿到真实向量分，排序不再随 top_k 漂移。
-VECTOR_CANDIDATE_FLOOR = 128
-
 
 
 
@@ -207,13 +203,20 @@ def retrieve_enterprise_knowledge(question: str, top_k: int = 5) -> tuple[Enterp
     requested_part_ids = extract_part_ids(question)
     vector_scores: dict[str, float] = {}
     warning: str | None = None
-    # 向量候选窗口不能跟着 top_k 走。BM25 是全库算的，而窗口外的文档向量分记 0，
-    # 两种尺度混合会让同一条证据的名次随 top_k 变化——实测 110008089491 对应的
-    # BOM 条目在 top_k=8 时排第 1、top_k=5 时跌出前五。用户调整"返回数量"
-    # 只应改变截断长度，不应改变排序本身，因此窗口取一个与 top_k 无关的下限。
-    window = min(len(documents), max(top_k * 4, VECTOR_CANDIDATE_FLOOR))
+    # 向量分与 BM25 都必须全库计算。BM25 本来就是全库的，若向量只在一个窗口内有值、
+    # 窗口外记 0，两种尺度混合会让同一条证据的名次随窗口大小变化——曾经窗口取 top_k*4，
+    # 同一条 BOM 证据在 top_k=8 时排第 1、top_k=5 时跌出前五。
+    #
+    # 这里不设窗口下限而直接取全库：下限只是把 bug 推远，语料一旦超过下限（550 条时
+    # 128 的窗口只覆盖 23%）问题就会重现。全库化让"调整返回数量只改变截断长度"
+    # 成为结构性保证，而不是依赖某个阈值。实测 550 条上全库反而更快
+    # （171 ms -> 81 ms/查询），top-1 91.7% -> 95.0%，召回 95.8% -> 100%。
+    #
+    # 目录规模进入万级时，此处需与 ANN 索引一并重新引入窗口（见 CLAUDE.md 的 ANN 守门条）。
     try:
-        for document, distance in enterprise_vector_store().similarity_search_with_score(question, k=window):
+        for document, distance in enterprise_vector_store().similarity_search_with_score(
+            question, k=len(documents)
+        ):
             vector_scores[document.metadata["source_id"]] = max(0.0, min(1.0, 1.0 - float(distance)))
     except (ChromaError, OSError, ValueError, RuntimeError) as error:
         # 已枚举：库目录缺失（FileNotFoundError）、SQLite/HNSW 文件损坏或被占用（OSError）、

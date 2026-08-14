@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
+import logging
+import os
+import tempfile
+import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import streamlit as st
 
-from machining_unified.config.paths import PROJECT_ROOT
+from machining_unified.config.paths import MESH_CACHE_DIR, PROJECT_ROOT
+
+logger = logging.getLogger(__name__)
 
 # cadquery-ocp 提供 OCP 二进制绑定；PyCharm 无法读取其完整类型存根。
 # noinspection PyUnresolvedReferences,PyPackageRequirements
@@ -37,16 +45,90 @@ MAX_TRIANGLES = 1_800
 # 缩小后仍足以辨认零件形态，也降低了自动旋转时的每帧绘制量。
 PREVIEW_HEIGHT = 260
 
+# 目录已达数百个模型，一次会话可能浏览远多于 32 个预览；
+# 进程内缓存放大后仍只保存归一化后的三角面（约 65 KB/模型），内存代价可控。
+_MEMORY_CACHE_SIZE = 256
+# 网格化耗时超过此秒数记 warning：这是预览卡顿的唯一真实来源，
+# 没有这条日志，回归会在没人注意时悄悄回来。
+_SLOW_MESH_SECONDS = 3.0
+# 大文件用更粗的线性偏差。BRepMesh 的完整三角化发生在 MAX_TRIANGLES 截断**之前**，
+# 因此截断不省时间，只有降低网格密度才省——实测 45.9 MB 的装配需要 65 秒。
+_LARGE_FILE_BYTES = 10 * 1024 * 1024
+_LINEAR_DEFLECTION = 0.6
+_LARGE_FILE_DEFLECTION = 2.0
+# 缓存文件格式版本。改变网格参数或归一化方式时必须递增，否则会读到旧口径的网格。
+_MESH_CACHE_VERSION = 1
 
-@lru_cache(maxsize=32)
+
+def _mesh_cache_key(source: Path, max_triangles: int) -> str:
+    """按文件内容而非路径做键：同一零件被移动或重命名后仍应命中。"""
+
+    digest = hashlib.md5(usedforsecurity=False)
+    with source.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return f"{digest.hexdigest()}-{max_triangles}-v{_MESH_CACHE_VERSION}"
+
+
+def _read_mesh_cache(key: str) -> dict[str, Any] | None:
+    path = MESH_CACHE_DIR / f"{key}.npz"
+    if not path.is_file():
+        return None
+    try:
+        with np.load(path) as archive:
+            triangles = archive["triangles"]
+    except (OSError, ValueError, KeyError, EOFError):
+        # 缓存损坏不是错误路径，重算即可；但要留痕，避免"永远算不完"被当成性能问题。
+        logger.warning("网格缓存不可读，将重新计算", extra={"cache_key": key}, exc_info=True)
+        return None
+    return {"triangles": triangles.tolist(), "triangle_count": int(triangles.shape[0])}
+
+
+def _write_mesh_cache(key: str, triangles: list[list[float]]) -> None:
+    """临时文件 + replace 原子落盘，避免并发写出半个文件后被读到。"""
+
+    try:
+        MESH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(suffix=".npz", dir=MESH_CACHE_DIR)
+        os.close(descriptor)
+        temporary_path = Path(temporary)
+        np.savez_compressed(temporary_path, triangles=np.asarray(triangles, dtype=np.float32))
+        # np.savez_compressed 会在没有扩展名时补 .npz；mkstemp 已给了扩展名，故路径不变。
+        temporary_path.replace(MESH_CACHE_DIR / f"{key}.npz")
+    except OSError:
+        # 缓存写不进去不影响功能，只是每次都要重算。
+        logger.warning("网格缓存写入失败，本次不缓存", extra={"cache_key": key}, exc_info=True)
+
+
+@lru_cache(maxsize=_MEMORY_CACHE_SIZE)
 def step_mesh_payload(source_file: str, max_triangles: int = MAX_TRIANGLES) -> dict[str, Any]:
-    """读取 STEP 网格并标准化到浏览器画布的统一坐标空间。"""
+    """读取 STEP 网格并标准化到浏览器画布的统一坐标空间。
+
+    三级缓存：进程内 lru_cache -> 落盘 npz -> 真正的 OCCT 网格化。
+    落盘这一级是必需的——lru_cache 重启即失效，而网格化是几十秒量级。
+    """
+
+    source = Path(source_file)
+    cache_key: str | None = None
+    if source.is_file():
+        try:
+            cache_key = _mesh_cache_key(source, max_triangles)
+        except OSError:
+            logger.warning("无法读取源文件计算缓存键", extra={"source_file": source_file}, exc_info=True)
+        if cache_key:
+            cached = _read_mesh_cache(cache_key)
+            if cached is not None:
+                return cached
+
+    started = time.perf_counter()
     reader = STEPControl_Reader()
     if reader.ReadFile(source_file) != IFSelect_RetDone or reader.TransferRoots() == 0:
         raise ValueError("无法读取 STEP 网格")
 
     shape = reader.OneShape()
-    BRepMesh_IncrementalMesh(shape, 0.6)
+    size = source.stat().st_size if source.is_file() else 0
+    deflection = _LARGE_FILE_DEFLECTION if size > _LARGE_FILE_BYTES else _LINEAR_DEFLECTION
+    BRepMesh_IncrementalMesh(shape, deflection, False, 0.5, True)
     triangles: list[list[float]] = []
     explorer = TopExp_Explorer(shape, TopAbs_FACE)
     while explorer.More():
@@ -79,6 +161,21 @@ def step_mesh_payload(source_file: str, max_triangles: int = MAX_TRIANGLES) -> d
         [round((triangle[index] - center[index % 3]) / span, 6) for index in range(9)]
         for triangle in triangles
     ]
+
+    elapsed = time.perf_counter() - started
+    if elapsed > _SLOW_MESH_SECONDS:
+        logger.warning(
+            "STEP 网格化耗时偏高",
+            extra={
+                "source_file": source_file,
+                "seconds": round(elapsed, 2),
+                "size_mb": round(size / 1024 / 1024, 2),
+                "linear_deflection": deflection,
+                "triangle_count": len(normalized),
+            },
+        )
+    if cache_key:
+        _write_mesh_cache(cache_key, normalized)
     return {"triangles": normalized, "triangle_count": len(normalized)}
 
 

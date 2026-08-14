@@ -161,6 +161,7 @@ data/
 
 - `data/catalogs/cad_models.json`：可检索 CAD 主目录，包含几何特征、设计属性和来源路径；
 - `data/catalogs/cad_duplicates.json`：按 MD5 识别的重复 STEP 文件；
+- `data/catalogs/decomposed_parts.json`：装配拆解台账，记录每个零件出自哪个装配、被哪些装配共用、实例数与拓扑指纹；
 - `data/catalogs/part_manifest.json`：人工标注的 `part_id` 材料/类型关联，用于回填设计属性；
 - `data/catalogs/unified_multimodal_manifest.json`：多模态索引构建信息；
 - `data/runtime/chat_history.json`：企业资料问答历史。
@@ -171,11 +172,12 @@ data/
 
 | 键 | 目录 | Chroma collection | 当前记录数 | 用途 |
 |---|---|---|---:|---|
-| `cad_semantic` | `data/vector_stores/cad_semantic` | `cad_models` | 24 | CAD 中文工程语义 |
-| `enterprise` | `data/vector_stores/enterprise` | `enterprise_knowledge` | 66 | STEP、BOM 和工程图证据 |
-| `multimodal` | `data/vector_stores/multimodal` | `unified_cad_models` | 24 | CLIP 文字/图片/STEP 表征 |
+| `cad_semantic` | `data/vector_stores/cad_semantic` | `cad_models` | 508 | CAD 中文工程语义 |
+| `enterprise` | `data/vector_stores/enterprise` | `enterprise_knowledge` | 550 | STEP、BOM 和工程图证据 |
+| `multimodal` | `data/vector_stores/multimodal` | `unified_cad_models` | 508 | CLIP 文字/图片/STEP 表征 |
 
-以上是 2026-08-13 的已验证基线，不应在业务代码中硬编码这些数量。数据导入后数量可以变化，应以完整性检查结果为准。
+以上是 2026-08-14 的已验证基线，不应在业务代码中硬编码这些数量。数据导入后数量可以变化，应以完整性检查结果为准。
+`enterprise` 比另外两套多的 42 条来自 BOM 条目与工程图，它按 1:1 跟随 CAD 目录增长（`_cad_documents` 遍历整个目录）。
 
 为什么不能合并：
 
@@ -219,6 +221,31 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 ```
 
 导入脚本会把审计副本放入 `data/enterprise/assembly_packages/`，把装配 STEP 放入 `data/enterprise/cad_samples/assemblies/`。
+
+### 拆解只有装配、没有 BOM 的资料
+
+企业常常只给整装配文件。装配整体与零件不是一个量级的几何（实测一个 45.9 MB 装配有 1207 个实体、61779 个面），
+混进零件检索会压低质量；"以模型搜模型"需要的是零件级样本。
+
+```powershell
+.\.venv\Scripts\python.exe scripts\decompose_assembly_step.py <装配目录或 STEP 文件> --dry-run
+.\.venv\Scripts\python.exe scripts\decompose_assembly_step.py <装配目录或 STEP 文件>
+```
+
+先跑 `--dry-run` 看成分再决定是否落盘。脚本只读源文件，零件写入
+`data/enterprise/cad_samples/assemblies/<装配号>/`，台账写入 `data/catalogs/decomposed_parts.json`。
+拆完必须按下面的完整顺序重建。
+
+三条容易踩的规则：
+
+- **中文是裸 GBK 字节，必须先转义再交给 OCCT。** 中文 CAD 导出的 STEP 常直接塞入 GBK 字节而不做
+  Part-21 转义，OCCT 对这类字符串的处理有损且不可逆（实测 6 个 GBK 字节被塌成 3 个码点）。
+  脚本先把字符串重写成 `\X2\...\X0\` 转义再读，实测改写前后 solids/faces/edges/bounding_box 完全一致。
+- **`^` 之后是父装配，不是零件自己。** CAD 把副本导出成 `复件 <零件名>^<父装配号>`。
+  对整串取图号会把同一父装配下的多个零件判成同一个——实测 IMU108-300-000 的 40 个叶子里有 18 个因此相撞。
+- **bbox 必须用 `AddOptimal_s`。** `BRepBndLib.Add_s(shape, box, True)` 在没有缓存三角网格时改用
+  曲面控制点包络并大幅高估，而同一零件在不同装配文件里是否带网格并不一致，会量出不同尺寸
+  （实测同一形状分别得到 3180×2348×1952 与 852×240×20，面数都是 208）。
 
 ### 完整重建顺序
 
@@ -326,6 +353,7 @@ flowchart LR
 | 修改企业资料召回和回答约束 | `machining_unified/knowledge/enterprise.py` |
 | 修改图号识别与标准化 | `machining_unified/knowledge/part_ids.py`（写入期与查询期共用） |
 | 修改设计属性回填来源 | `machining_unified/knowledge/manifests.py`，随后重建 CAD 目录与索引 |
+| 修改装配拆解规则（图号推导、去重指纹、外购件识别） | `scripts/decompose_assembly_step.py`，随后重新拆解并全量重建 |
 | 增加数据路径 | 先改 `machining_unified/config/paths.py` |
 | 增加/变更向量库 | 同时改 `paths.py`、`database_registry.py` 和审计脚本 |
 
@@ -333,10 +361,30 @@ flowchart LR
 
 - Windows 下 Chroma 的 SQLite 文件可能被 Streamlit、Navicat 或 DataGrip 占用，重建前先关闭相关进程。
 - CAD 目录以 MD5 去重；同内容文件只保留一个可检索主记录，重复来源记录在 `cad_duplicates.json`。
+- **MD5 去重的边界：它对源文件字节级重复有效，对装配拆解件无能为力。** 这不是缺陷，是机制边界，
+  不要因此删掉那段代码。同一种螺钉从不同装配导出时 STEP 实体编号与坐标上下文不同，
+  字节永不相同——实测 484 个拆解件的 MD5 去重命中 **0 条**，`cad_duplicates.json` 为空。
+  拆解件的真实去重发生在上游 `scripts/decompose_assembly_step.py` 的
+  "零件自身名 + 拓扑指纹（面/边/顶点数 + AddOptimal bbox）"规则里，2706 个叶子实例收敛到 484 个。
+  推论：**`check_databases.py` 不会发现"同一零件以不同 STEP 混入目录"**，这条只能靠上游规则守；
+  上游规则一旦改动，508 这个数字会静默漂移，因此规则版本号必须随台账落盘。
 - 资料组按文件所在的**直接目录**划分。装配包放在 `cad_samples/assemblies/<装配号>/`，取首层目录会把所有装配并成一个伪资料组。
 - 文件名只能作为谨慎的类别提示，不能替代 STEP 几何事实。
 - `design_metadata` 只允许由 BOM 或人工标注清单回填，未记载的字段必须保持 `null`；BOM 里的 `NA` 视为缺失。
-- 当前 BOM（装配 630DTXT806-300-000 的下级件）与 CAD 目录（`零件1.0` 的 20 个零件）**没有交集**，因此 24 个模型里只有 3 个教学模型有材料标注，几何相似度的 11 项设计属性权重基本处于未激活状态。要提升“以模型搜模型”的质量，需要补齐资料而不是改代码。
+- 当前 BOM（装配 630DTXT806-300-000 的下级件）与 CAD 目录**没有交集**，508 个模型里只有 3 个教学模型有材料标注，
+  几何相似度的 11 项设计属性权重对 99.4% 的库处于未激活状态。要提升"以模型搜模型"的质量，需要补齐资料而不是改代码。
+- **设计属性的四条通道各不相同，改一处不会自动惠及其它。** 实测通道图：
+
+  | 通道 | 语料 | 有属性? |
+  |---|---|---|
+  | 模型检索·语义 BGE | `semantic_document_text` | 有（经 `textify_cad_features`） |
+  | 模型检索·混合 BM25 | `enriched_text` | **零通道**（该函数根本没有属性行） |
+  | 模型检索·几何重排 | 直读 `design_metadata` | 有（结构化，不经文本） |
+  | 企业问答 | `textify_cad_features` | 有 |
+
+  所以"45钢的轴"这类属性查询在 BM25 分支是**永久零命中，与数据多少无关**；补齐材料数据只会让语义分支
+  和几何重排受益。要补 BM25 那条缺口需要结构化属性通道（术语解析 → `design_metadata` 精确匹配），
+  而不是往 `enriched_text` 里加文本。
 - 自定义 CSS 会覆盖 Streamlit 的默认版式，改 `.block-container` 时必须回归两件事：透明 `stHeader` 是否吃掉了首个组件的点击，以及长页面顶部是否还能滚动到达。
 - Streamlit widget 状态依赖稳定的 `key`；重命名 key 会影响跨重跑状态和历史交互。
 - `st.cache_resource` 缓存向量模型和数据库连接；索引重建后，正在运行的页面可能需要重启才能加载新库。
@@ -360,11 +408,18 @@ flowchart LR
   测不出上述缺陷——这正是它一度逃过回归的原因。
 - **CLIP 对中文无效。** `clip-ViT-B-32` 是英文图文模型，实测三条中文描述族级命中 0/9，
   因此文字模式下停用统一多模态开关。要支持中文需换 chinese-clip 并重建多模态库。
-- **混合打分里的候选窗口不能跟着 `top_k` 走。** 企业问答的 BM25 是全库计算的，
-  而向量分只在候选窗口内有值、窗口外记 0。若窗口取 `top_k * 4`，同一条证据会在
-  `top_k=8` 时排第 1、`top_k=5` 时跌出前五——用户拖动"返回数量"会改变排序本身。
-  现在窗口有与 `top_k` 无关的下限（`VECTOR_CANDIDATE_FLOOR`），
-  `tests/test_enterprise_answer.py` 锁住"小 top_k 结果必须是大 top_k 的前缀"。
+- **混合打分里的向量分必须与 BM25 同口径全库计算，不要设候选窗口。** 企业问答的 BM25 是全库的，
+  若向量只在窗口内有值、窗口外记 0，同一条证据会在 `top_k=8` 时排第 1、`top_k=5` 时跌出前五——
+  用户拖动"返回数量"改变的不是截断长度而是排序本身。
+  曾经用过与 `top_k` 无关的下限（`VECTOR_CANDIDATE_FLOOR=128`）来绕开，但那只是把 bug 推远：
+  语料从 66 条涨到 550 条后，128 的窗口只覆盖 23%，问题重现。
+  现在直接取 `k=len(documents)`。实测 550 条上全库化**质量和速度双赢**：
+  top-1 91.7% → 95.0%，召回 95.8% → 100%，延迟 171 ms → 81 ms/查询。
+  `tests/test_enterprise_answer.py` 锁住"小 top_k 结果必须是大 top_k 的前缀"这一结构性契约。
+  目录进入万级时才需与 ANN 一并重新引入窗口。
+- **目录规模 < 5000 时禁止引入 ANN 索引（faiss/hnswlib）。** 508 条全库线性扫描是毫秒级，
+  而第四套索引会立刻带来与 CAD 目录的一致性维护成本——现有三套索引的同步已经是重建顺序的主要约束。
+  引入门槛以 `check_databases.py` 报出的目录条数为准。
 - `langchain-community` 当前会出现维护状态警告，但现有 `PyPDFLoader` 链路仍可运行；迁移依赖时要做完整文档加载回归。
 - Streamlit 的文件监视器会遍历 `transformers` 的惰性模块树，日志里会反复出现 `No module named 'torchvision'` 的 traceback。这是探测噪音，不影响功能；项目本身不需要 torchvision。
 

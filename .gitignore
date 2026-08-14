@@ -10,6 +10,7 @@ __pycache__/
 # 本地向量库与运行历史
 data/vector_stores/
 data/runtime/chat_history.json
+data/runtime/meshes/
 
 # 企业资料与派生目录只保存在本机
 data/enterprise/cad_samples/
@@ -17,6 +18,7 @@ data/enterprise/assembly_packages/
 data/catalogs/cad_models.json
 data/catalogs/cad_duplicates.json
 data/catalogs/unified_multimodal_manifest.json
+data/catalogs/decomposed_parts.json
 data/knowledge/source_documents/
 
 # 本地 OCR 模型体积较大，不提交远端
