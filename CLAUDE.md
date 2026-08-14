@@ -202,17 +202,30 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 .\.venv\Scripts\python.exe scripts\validate_part_manifest.py
 ```
 
+### 自动化端到端回归
+
+```powershell
+.\.venv\Scripts\python.exe tests\test_upload_flows.py
+```
+
+用 Streamlit 官方 `AppTest` 在进程内跑真实 `app.py`，覆盖 STEP 上传、图片上传、
+空提交防御和查询方式切换隔离，共 36 项断言；退出码 0 表示通过。
+不需要浏览器，也不引入新依赖。首次运行需加载 BGE/CLIP 权重，整体约 3 分钟。
+
+注意：`AppTest` 的每个会话有独立组件注册表，而 `cad/viewer.py` 在模块级注册三维
+查看器，因此测试会在每个用例前清理 `machining_unified.*` 的模块缓存。真实部署是
+单进程单注册表，不存在该问题——若看到 `Component 'step_mesh_viewer' is not registered`，
+那是测试隔离没做干净，不是产品缺陷。
+
 ### 页面回归
 
-至少确认：
+`AppTest` 无法渲染自定义组件和 CSS，以下仍需在浏览器中人工确认：
 
 - 工作区切换器在 1280×720 这类较矮视口下**可以点击**（历史上被透明 `stHeader` 覆盖过）；
-- 结果列表很长时页面顶部**仍可滚动到达**（`.block-container` 用 `align-items: safe center`）；
-- “模型检索”工作区可以切换 STEP、文字、图片三种查询；
+- 结果列表很长时页面顶部**仍可滚动到达**；
+- STEP 三维预览可拖动旋转、滚轮缩放；
 - “企业资料问答”工作区可以显示历史对话和输入框；
-- 提交检索后再触发一次非提交重跑（切换工作区或改返回数量），结果应当保留；
-- 页面启动后没有 Streamlit exception；
-- 改动过的检索分支至少执行一次真实查询。
+- 页面启动后没有 Streamlit exception。
 
 ### 数据回归
 
