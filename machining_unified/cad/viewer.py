@@ -267,7 +267,8 @@ def render_step_payload(payload: dict[str, Any], *, key: str, height: int = PREV
         st.warning("没有可显示的 STEP 三角网格。")
         return
     _VIEWER(data=payload, key=key, height=height)
-    st.caption(f"真实 STEP 网格：{payload['triangle_count']} 个三角面；自动旋转中，拖动可接管视角、滚轮缩放。")
+    # 结果卡片排成两列，说明文字必须短，否则在半宽列里会折成三行挤掉证据信息。
+    st.caption(f"{payload['triangle_count']} 个三角面 · 自动旋转 · 可拖动/缩放")
 
 
 def render_step_file(source: Path, *, key: str, height: int = PREVIEW_HEIGHT) -> None:

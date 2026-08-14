@@ -23,6 +23,25 @@ from machining_unified.dto import (
 from machining_unified.knowledge.engineering import expand_part_relations
 
 
+# 结果卡片排成两列。半宽卡片里 260px 预览显得过高，网格中单独用更矮的高度。
+RESULT_COLUMNS = 2
+GRID_PREVIEW_HEIGHT = 190
+
+
+def _grid(items: Sequence[Any], columns: int = RESULT_COLUMNS):
+    """按固定列数分行铺开结果，逐个产出（列容器, 条目, 从 1 开始的序号）。
+
+    条目数为奇数时最后一行只填左列，右列留空——不做补位，
+    否则会出现一个没有内容却带边框的空卡片。
+    """
+
+    for row_start in range(0, len(items), columns):
+        row = items[row_start : row_start + columns]
+        cells = st.columns(columns, gap="medium")
+        for offset, (cell, item) in enumerate(zip(cells, row)):
+            yield cell, item, row_start + offset + 1
+
+
 def render_graph_relations(part_id: str) -> None:
     """展示该零件在知识图谱中的直接邻域。
 
@@ -51,17 +70,18 @@ def render_geometry_results(items: Sequence[GeometryHit]) -> None:
     if not items:
         st.warning("CAD 目录中没有可比较的模型。", icon=":material/search_off:")
         return
-    for index, hit in enumerate(items, start=1):
-        with st.container(border=True):
+    for cell, hit, index in _grid(items):
+        with cell, st.container(border=True):
             st.write(f"**{index}. {hit.part_id}** · 几何相似度 **{hit.score:.3f}**")
             st.caption(f"资料组：{hit.model_group_id} ｜来源：`{hit.source_file or hit.file_name}`")
-            st.write("相似依据：" + ("；".join(hit.reasons) or "可比较字段有限"))
-            render_graph_relations(hit.part_id)
             if hit.source_file:
                 render_step_file(
                     (PROJECT_ROOT / hit.source_file).resolve(),
                     key=f"geometry-result-{index}-{hit.part_id}",
+                    height=GRID_PREVIEW_HEIGHT,
                 )
+            st.write("相似依据：" + ("；".join(hit.reasons) or "可比较字段有限"))
+            render_graph_relations(hit.part_id)
 
 
 def render_semantic_results(
@@ -75,13 +95,15 @@ def render_semantic_results(
     if not items:
         st.warning("语义向量库没有返回模型。", icon=":material/search_off:")
         return
-    for index, hit in enumerate(items, start=1):
-        with st.container(border=True):
+    for cell, hit, index in _grid(items):
+        with cell, st.container(border=True):
             st.write(f"**{index}. {hit.part_id}** · 语义相似度 **{hit.score:.3f}**")
             st.caption(f"来源：`{hit.source_file}` ｜方式：BGE 中文语义向量")
             record = catalog_by_id.get(hit.part_id)
             if record:
-                render_step_model(record, key=f"{key_prefix}-{index}-{hit.part_id}")
+                render_step_model(
+                    record, key=f"{key_prefix}-{index}-{hit.part_id}", height=GRID_PREVIEW_HEIGHT
+                )
 
 
 def render_unified_results(
@@ -99,13 +121,15 @@ def render_unified_results(
     if not items:
         st.warning("统一多模态向量库没有返回模型。", icon=":material/search_off:")
         return
-    for index, hit in enumerate(items, start=1):
+    for cell, hit, index in _grid(items):
         record = catalog_by_id.get(hit.part_id)
-        with st.container(border=True):
+        with cell, st.container(border=True):
             st.write(f"**{index}. {hit.part_id}** · 多模态相似度 **{hit.score:.3f}**")
             st.caption(f"来源：`{hit.source_file}` ｜方式：{hit.embedding_method}")
             if record:
-                render_step_model(record, key=f"{key_prefix}-{index}-{hit.part_id}")
+                render_step_model(
+                    record, key=f"{key_prefix}-{index}-{hit.part_id}", height=GRID_PREVIEW_HEIGHT
+                )
 
 
 def render_image_results(items: Sequence[VisualHit]) -> None:
@@ -115,12 +139,11 @@ def render_image_results(items: Sequence[VisualHit]) -> None:
     if not items:
         st.warning("视觉检索没有返回模型。", icon=":material/search_off:")
         return
-    for index, hit in enumerate(items, start=1):
-        preview, details = st.columns([1, 3], vertical_alignment="center")
-        with preview:
-            st.image(hit.preview, caption=hit.part_id)
-        with details:
+    for cell, hit, index in _grid(items):
+        with cell, st.container(border=True):
             st.write(f"**{index}. {hit.part_id}** · 视觉相似度 **{hit.score:.3f}**")
+            # 展示的正是参与比对的那张渲染图，而不是另行生成的示意图。
+            st.image(hit.preview, width="stretch")
             st.caption(f"方式：{hit.method} ｜来源：`{hit.source_file}`")
 
 
@@ -136,8 +159,8 @@ def render_hybrid_results(items: Sequence[HybridHit], families: Sequence[str]) -
     warning = next((hit.retrieval_warning for hit in items if hit.retrieval_warning), None)
     if warning:
         st.warning(warning, icon=":material/warning:")
-    for index, hit in enumerate(items, start=1):
-        with st.container(border=True):
+    for cell, hit, index in _grid(items):
+        with cell, st.container(border=True):
             st.write(f"**{index}. {hit.part_id} · {hit.family_label}**")
             st.caption(
                 f"混合相关度 {hit.score:.3f} ｜向量 {hit.vector_score:.3f} ｜"
