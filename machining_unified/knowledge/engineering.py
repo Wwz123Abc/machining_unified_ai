@@ -14,7 +14,11 @@ from chromadb.errors import ChromaError
 from machining_unified.cad.extraction import classify_part_family, geometry_semantics
 from machining_unified.cad.retrieval import load_cad_catalog
 from machining_unified.config.retrieval_params import get_retrieval_params
-from machining_unified.knowledge.manifests import assembly_manifest_for, load_assembly_manifests
+from machining_unified.knowledge.manifests import (
+    assemblies_using_part,
+    assembly_manifest_for,
+    load_assembly_manifests,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +143,23 @@ def build_knowledge_graph(records: list[dict[str, Any]] | None = None) -> dict[s
             function_id = f"function:{function}"
             add_node(function_id, function, "function")
             edges.append({"source": part_id, "target": function_id, "label": "支持候选"})
+    # 装配拆解台账里的归属来自 XCAF 产品树遍历，与 BOM 同为事实，不是几何推断。
+    # 没有它，484 个拆解件在图谱里只有候选边、没有任何事实边，
+    # "这个零件还被哪些装配用到"也无从回答。
+    for record in records:
+        part_id = str(record["part_id"])
+        for index, assembly_id in enumerate(assemblies_using_part(part_id)):
+            assembly_node = f"assembly:{assembly_id}"
+            add_node(assembly_node, f"{assembly_id} 装配", "assembly")
+            edges.append(
+                {
+                    "source": part_id,
+                    "target": assembly_node,
+                    # 首个是拆出它的装配，其余是共用它的装配；两者都是事实，但含义不同。
+                    "label": "拆自装配" if index == 0 else "该装配也使用",
+                }
+            )
+
     catalog_ids = {str(record["part_id"]) for record in records}
     for manifest in load_assembly_manifests():
         assembly_id = manifest["assembly_id"]

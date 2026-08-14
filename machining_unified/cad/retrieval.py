@@ -45,6 +45,26 @@ def _dimension_similarity(left: list[float], right: list[float]) -> float:
     return sum(ratios) / len(ratios)
 
 
+def _size_proximity(left: list[float], right: list[float], mode: str) -> float | None:
+    """绝对尺寸邻近度，与 ``_dimension_similarity`` 互补。
+
+    前者只看三边排序后的**比例**（刻意忽略尺度），本函数看**实际大小**。
+    两个几何相似但一个 20 mm 一个 2000 mm 的零件，在前者眼里完全一样，
+    在这里则相差两个数量级——"找同尺寸替换件"要的正是后一种判据。
+    """
+
+    if not left or not right or not all(left) or not all(right):
+        return None
+    if mode == "volume_ratio":
+        first = left[0] * left[1] * left[2]
+        second = right[0] * right[1] * right[2]
+    else:  # max_edge_ratio，配置加载期已校验取值合法
+        first, second = max(left), max(right)
+    if first <= 0 or second <= 0:
+        return None
+    return min(first, second) / max(first, second)
+
+
 def _candidate_similarity(left: list[str], right: list[str]) -> float:
     common = set(left) & set(right)
     return min(1.0, len(common) / max(1, min(len(left), len(right))))
@@ -76,11 +96,24 @@ def score_cad_similarity(query: dict[str, Any], candidate: dict[str, Any]) -> tu
     c_type = candidate.get("part_family") or candidate.get("features", {}).get("geometry_semantics", {}).get("family")
     add_match("零件类型候选一致", weights.part_family, bool(q_type and c_type and q_type == c_type), bool(q_type and c_type))
 
-    dimensions = _dimension_similarity(_dimension_vector(query), _dimension_vector(candidate))
+    query_dimensions = _dimension_vector(query)
+    candidate_dimensions = _dimension_vector(candidate)
+    dimensions = _dimension_similarity(query_dimensions, candidate_dimensions)
     weight_total += weights.dimensions
     score += weights.dimensions * dimensions
     if dimensions >= 0.7:
         reasons.append(f"外包络尺寸比例相近（{dimensions:.2f}）")
+
+    # 绝对尺寸是**追加项**，默认关闭。上面的 dimensions 项本就是尺度无关的，
+    # 因此关闭时打分与历史完全一致；开启后才引入"多大"这个维度。
+    size_proximity = get_retrieval_params().size_proximity
+    if size_proximity.enabled:
+        proximity = _size_proximity(query_dimensions, candidate_dimensions, size_proximity.mode)
+        if proximity is not None:
+            weight_total += size_proximity.weight
+            score += size_proximity.weight * proximity
+            if proximity >= 0.7:
+                reasons.append(f"绝对尺寸接近（{proximity:.2f}，{size_proximity.mode}）")
 
     q_surfaces = q_features.get("surface_types", {})
     c_surfaces = c_features.get("surface_types", {})

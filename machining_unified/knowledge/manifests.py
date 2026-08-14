@@ -6,7 +6,11 @@ import json
 from functools import lru_cache
 from typing import Any
 
-from machining_unified.config.paths import ASSEMBLY_PACKAGES_DIR, PART_MANIFEST_PATH
+from machining_unified.config.paths import (
+    ASSEMBLY_PACKAGES_DIR,
+    DECOMPOSED_PARTS_PATH,
+    PART_MANIFEST_PATH,
+)
 from machining_unified.knowledge.part_ids import normalized_part_id
 
 
@@ -43,6 +47,32 @@ def assembly_manifest_for(part_id: str) -> dict[str, Any] | None:
         (manifest for manifest in load_assembly_manifests() if manifest["assembly_id"] == part_id),
         None,
     )
+
+
+@lru_cache(maxsize=1)
+def load_decomposed_parts() -> dict[str, dict[str, Any]]:
+    """读取装配拆解台账，按 part_id 索引。
+
+    台账里的装配归属来自 XCAF 产品树遍历，是**事实**而非几何推断——
+    与 BOM 同级，因此可以作为知识图谱的事实边。
+    没有拆解过资料属于正常状态（只有单零件或成套资料包的部署），返回空字典。
+    """
+
+    if not DECOMPOSED_PARTS_PATH.exists():
+        return {}
+    payload = json.loads(DECOMPOSED_PARTS_PATH.read_text(encoding="utf-8"))
+    return {str(item["part_id"]): item for item in payload.get("parts", [])}
+
+
+def assemblies_using_part(part_id: str) -> list[str]:
+    """该零件出现在哪些装配里（拆出它的那个，加上共用它的其它装配）。"""
+
+    entry = load_decomposed_parts().get(str(part_id))
+    if not entry:
+        return []
+    origin = str(entry.get("origin_assembly", ""))
+    shared = [str(name) for name in entry.get("also_used_in", [])]
+    return [name for name in dict.fromkeys([origin, *shared]) if name]
 
 
 def _usable(value: Any) -> bool:

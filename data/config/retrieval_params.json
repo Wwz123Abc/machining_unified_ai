@@ -36,5 +36,10 @@
     "chamfers": 0.02,
     "fillets": 0.02,
     "assembly_relations": 0.03
+  },
+  "size_proximity": {
+    "enabled": false,
+    "weight": 0.15,
+    "mode": "volume_ratio"
   }
 }

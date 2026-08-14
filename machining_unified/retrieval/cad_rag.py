@@ -67,16 +67,23 @@ def semantic_document_text(record: dict[str, Any]) -> str:
     真正的解法不在索引文本，而在排序：STEP 分支改为几何重排后，
     名次不再依赖语义分，保留叙述反而让候选集更集中在同族
     （异族混入 10% -> 4%）。因此叙述保留，噪声问题由重排解决。
+
+    **本函数的输出必须是 STEP 文件内容的纯函数。** 凡是只存在于目录记录、
+    而无法由现场解析重建的字段（part_id、BOM、回填的设计属性），一律排除。
+    满足这一条，"查询文本 == 自身文档文本"就成为结构性不变量，
+    自检索候选覆盖率恒为 100%，可以当作管道断裂的探测器使用；
+    否则该性质只是"多数记录恰好没有这些字段"的副产品，
+    会随资料补全而失效——那正好是最不该失去探测能力的时候。
     """
 
     features = record.get("features", {})
     semantics = features.get("geometry_semantics") or {}
     surfaces = features.get("surface_types", {})
     assembly = features.get("assembly_structure", {})
-    # 一律现算而不复用目录里的 search_text：后者带 part_id，
-    # 而上传查询的 part_id 恒为 QUERY，两侧会因此固定错开。
+    # 一律现算而不复用目录里的 search_text：后者带 part_id 与回填的设计属性，
+    # 而上传查询的 part_id 恒为 QUERY、也没有任何设计属性，两侧会因此固定错开。
     lines = [
-        textify_cad_features(record, include_identity=False),
+        textify_cad_features(record, include_identity=False, include_design_metadata=False),
         f"形态：{semantics.get('shape')}；复杂度：{semantics.get('complexity')}；{semantics.get('radius_profile')}。",
         f"长径比 {semantics.get('aspect_ratio')}；扁平比 {semantics.get('thin_ratio')}。",
         f"拓扑：实体 {features.get('solid_count')}，面 {features.get('face_count')}，"

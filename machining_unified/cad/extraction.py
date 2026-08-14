@@ -292,7 +292,12 @@ def _derive_machining_candidates(features: dict[str, Any]) -> list[str]:
     return candidates
 
 
-def textify_cad_features(record: dict[str, Any], *, include_identity: bool = True) -> str:
+def textify_cad_features(
+    record: dict[str, Any],
+    *,
+    include_identity: bool = True,
+    include_design_metadata: bool = True,
+) -> str:
     """将 CAD JSON 转为可用于混合检索的短文本。
 
     ``include_identity=False`` 时省略 part_id。语义向量用于"以模型搜模型"，
@@ -300,6 +305,16 @@ def textify_cad_features(record: dict[str, Any], *, include_identity: bool = Tru
     查询与文档产生固定偏移：实测 TEACH-CAD-001 的查询/文档余弦为 0.9589，
     仅把 part_id 对齐后升至 0.9955，该模型因此被挤出自身查询的候选集。
     按图号检索由 BM25 与企业问答的图号精确匹配承担，不依赖本文本。
+
+    ``include_design_metadata=False`` 时省略设计属性，理由与上面同源：
+    材料、热处理、表面处理由 BOM 或人工清单**回填**，只存在于目录记录里；
+    现场解析出来的上传查询永远没有它们。文档带、查询不带，就是第三次重演
+    同一个不对称——实测 508 条目录下 TEACH-CAD-002 因此被挤出自身查询的候选集。
+
+    **两个开关的默认值都必须保持 True。** 本函数同时供着企业知识库的证据文本
+    与 CAD 目录的 ``search_text``，那两条链路的查询是自然语言而非解析记录，
+    不存在上述不对称，属性在那里是纯收益。只有语义索引
+    （``retrieval/cad_rag.semantic_document_text``）才关掉它们。
     """
 
     features = record.get("features", {})
@@ -317,7 +332,7 @@ def textify_cad_features(record: dict[str, Any], *, include_identity: bool = Tru
     # 该占位句出现在 21/24 的目录记录和每一次上传查询里，不携带任何信息，
     # 却让少数带真实属性的模型在向量空间中被系统性推远——实测导致这些模型
     # 在自身查询的语义候选集中被完全漏掉。
-    design_clause = f"；设计属性={design_text}" if design_text else ""
+    design_clause = f"；设计属性={design_text}" if design_text and include_design_metadata else ""
     identity = f"part_id={record.get('part_id')}；" if include_identity else ""
     return (
         f"{identity}CAD/3D 模型；"

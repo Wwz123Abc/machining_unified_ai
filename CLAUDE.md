@@ -311,8 +311,28 @@ flowchart LR
 ```
 
 用 Streamlit 官方 `AppTest` 在进程内跑真实 `app.py`，覆盖 STEP 上传、图片上传、
-空提交防御和查询方式切换隔离，共 36 项断言；退出码 0 表示通过。
-不需要浏览器，也不引入新依赖。首次运行需加载 BGE/CLIP 权重，整体约 3 分钟。
+空提交防御和查询方式切换隔离；退出码 0 表示通过。
+不需要浏览器，也不引入新依赖。首次运行需加载 BGE/CLIP 权重。
+目录扩到 508 条后整体耗时约 10 分钟（此前 24 条时约 3 分钟）。
+
+### 检索质量门禁
+
+```powershell
+.\.venv\Scripts\python.exe tests\test_retrieval_gates.py          # 快速档，提交前跑
+.\.venv\Scripts\python.exe tests\test_retrieval_gates.py --full   # 全量，合并前或每晚跑
+```
+
+分两层，语义不同：
+
+- **回归层**（失败必须阻断）测"管道是否断裂"。它的灵敏度来自一个结构性不变量——
+  `semantic_document_text` 是 STEP 文件内容的**纯函数**，凡是只存在于目录记录、
+  无法由现场解析重建的字段（`part_id`、BOM、回填的设计属性）都已排除，
+  因此"查询文本 == 自身文档文本"恒成立，自检索候选覆盖率必须是 100%。
+  低于 100% 只可能是文本构造漂移、索引陈旧、`part_id` 映射错或候选窗口漏召回，
+  没有"数据不好"这种解释。**不要为了让它变绿而放宽阈值——那等于关掉探测器。**
+- **质量层**（只记录趋势，不阻断）测排序好坏，受数据分布影响，不该卡住合并。
+
+新增打分维度、改动索引文本或候选策略时，回归层必须先绿，质量层的变化要在提交说明里给出前后数值。
 
 注意：`AppTest` 的每个会话有独立组件注册表，而 `cad/viewer.py` 在模块级注册三维
 查看器，因此测试会在每个用例前清理 `machining_unified.*` 的模块缓存。真实部署是
@@ -346,6 +366,7 @@ flowchart LR
 | 调整工业风颜色和样式 | `assets/industrial.css`、`.streamlit/config.toml` |
 | 修改 STEP 几何特征 | `machining_unified/cad/extraction.py`，随后重建相关索引 |
 | 调整任何检索打分权重 | `data/config/retrieval_params.json`（**不要改源码**；改完刷新页面即可，`unified_embedding` 除外，它需要重建多模态索引） |
+| 切换"找形状像的" / "找同尺寸替换件" | `data/config/retrieval_params.json` 的 `size_proximity.enabled` |
 | 增删相似度比较维度 | `machining_unified/config/retrieval_params.py` 加字段，再在对应模块接线 |
 | 修改 CAD 文本 RAG | `machining_unified/retrieval/cad_rag.py` |
 | 修改 BM25、类别路由或知识图谱 | `machining_unified/knowledge/engineering.py` |
@@ -417,6 +438,12 @@ flowchart LR
   top-1 91.7% → 95.0%，召回 95.8% → 100%，延迟 171 ms → 81 ms/查询。
   `tests/test_enterprise_answer.py` 锁住"小 top_k 结果必须是大 top_k 的前缀"这一结构性契约。
   目录进入万级时才需与 ANN 一并重新引入窗口。
+- **`size_proximity` 是"追加绝对尺寸项"，不是"尺寸归一化"开关。** 几何相似度里的
+  `dimensions` 项本来就是尺度无关的——`_dimension_similarity` 先把三个外包尺寸排序
+  再比比例，绝对尺寸从未进入打分。所以关闭时（默认）打分与历史完全一致；
+  开启后才引入"多大"这个维度，用于"找能替换的同尺寸零件"。
+  实测一对形状分 0.7528、体积比 0.047（尺寸差 21 倍）的零件，开启后降到 0.5899。
+  开关会改变几何分 → 改变语义重排名次，因此调整前后都要跑 `tests/test_retrieval_gates.py`。
 - **目录规模 < 5000 时禁止引入 ANN 索引（faiss/hnswlib）。** 508 条全库线性扫描是毫秒级，
   而第四套索引会立刻带来与 CAD 目录的一致性维护成本——现有三套索引的同步已经是重建顺序的主要约束。
   引入门槛以 `check_databases.py` 报出的目录条数为准。
