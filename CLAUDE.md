@@ -278,6 +278,9 @@ flowchart LR
 ```powershell
 .\.venv\Scripts\python.exe tests\test_upload_flows.py
 .\.venv\Scripts\python.exe tests\test_retrieval_params.py
+.\.venv\Scripts\python.exe tests\test_enterprise_answer.py
+.\.venv\Scripts\python.exe tests\test_step_format_guard.py
+.\.venv\Scripts\python.exe tests\test_semantic_rerank.py
 ```
 
 用 Streamlit 官方 `AppTest` 在进程内跑真实 `app.py`，覆盖 STEP 上传、图片上传、
@@ -338,6 +341,13 @@ flowchart LR
 - Streamlit widget 状态依赖稳定的 `key`；重命名 key 会影响跨重跑状态和历史交互。
 - `st.cache_resource` 缓存向量模型和数据库连接；索引重建后，正在运行的页面可能需要重启才能加载新库。
 - 多模态检索是补充召回，不替代严格尺寸、拓扑和加工特征比较。
+- **裸 BGE 分数在本库上没有排序能力。** 实测 24 个模型互查，全部候选压在 0.95~0.97 的窄带内，
+  top-3 分数极差均值仅 0.005，自检索命中率 37.5%，且存在单一模型垄断半数查询榜首的 hub 效应。
+  因此 STEP 分支把语义召回降级为候选集（k×3），由 `score_cad_similarity` 的几何加权分决定名次。
+  界面必须同时显示两个分数——名次来自几何分，语义分只表示召回强度。
+- **不要为了提升模型检索而删掉索引里的族级功能叙述。** 实测删除后模型自检索确有提升
+  （37.5% → 62.5%），但功能性文字查询的纯语义命中从 3/3 掉到 0/3，且 STEP 异族混入反而
+  从 4% 升到 10%。噪声问题由几何重排解决，不由删文本解决。
 - `langchain-community` 当前会出现维护状态警告，但现有 `PyPDFLoader` 链路仍可运行；迁移依赖时要做完整文档加载回归。
 - Streamlit 的文件监视器会遍历 `transformers` 的惰性模块树，日志里会反复出现 `No module named 'torchvision'` 的 traceback。这是探测噪音，不影响功能；项目本身不需要 torchvision。
 

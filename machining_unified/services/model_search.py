@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +18,7 @@ from machining_unified.cad.extraction import (
     extract_step_features,
     looks_like_part21_step,
 )
-from machining_unified.cad.retrieval import retrieve_similar_cad
+from machining_unified.cad.retrieval import load_cad_catalog, retrieve_similar_cad, score_cad_similarity
 from machining_unified.cad.visual import retrieve_by_image
 from machining_unified.dto import (
     GeometryHit,
@@ -136,14 +137,45 @@ def _hybrid_hits(items: list[dict[str, Any]]) -> tuple[HybridHit, ...]:
     )
 
 
+# 语义召回作候选集时的放大倍数。实测本库语义分几乎无区分度，
+# 只取 top_k 会让真正相关的模型落在候选之外，重排也就无从纠正。
+SEMANTIC_CANDIDATE_FACTOR = 3
+
+
+def _rerank_semantic_by_geometry(
+    query: dict[str, Any], hits: tuple[SemanticHit, ...], top_k: int
+) -> tuple[SemanticHit, ...]:
+    """用可解释几何加权分重排语义候选。
+
+    语义分负责"捞得到"，几何分负责"排得准"——这是刻意的分工：
+    实测 BGE 在本库上把全部候选压在 0.952~0.971 的窄带内，名次基本由噪声决定；
+    而几何分是代码计算的可解释加权分，含义明确且可给出依据。
+    两个分数都会保留并展示，不用一种证据的数值冒充另一种证据的排序。
+    """
+
+    catalog = {str(record["part_id"]): record for record in load_cad_catalog()}
+    reranked: list[SemanticHit] = []
+    for hit in hits:
+        candidate = catalog.get(hit.part_id)
+        if candidate is None:
+            # 目录里已不存在的记录无法几何比较，保留原样并排在有分者之后。
+            reranked.append(hit)
+            continue
+        score, reasons = score_cad_similarity(query, candidate)
+        reranked.append(replace(hit, rerank_score=score, rerank_reasons=tuple(reasons)))
+    reranked.sort(key=lambda item: (item.rerank_score is not None, item.rerank_score or 0.0), reverse=True)
+    return tuple(reranked[:top_k])
+
+
 def search_by_step(path: Path, top_k: int, use_unified: bool = False) -> StepSearchResult:
     """并行保留严格几何、BGE 语义和可选 CLIP 结果，不混成伪统一分数。"""
 
     query = extract_step_features(path, part_id="QUERY", use_filename_hint=False)
+    semantic = _semantic_hits(retrieve_cad_rag(query, top_k=top_k * SEMANTIC_CANDIDATE_FACTOR))
     return StepSearchResult(
         query=query,
         geometry=_geometry_hits(retrieve_similar_cad(query, top_k=top_k)),
-        semantic=_semantic_hits(retrieve_cad_rag(query, top_k=top_k)),
+        semantic=_rerank_semantic_by_geometry(query, semantic, top_k),
         unified=_unified_hits(retrieve_unified_by_step(query, top_k=top_k)) if use_unified else (),
     )
 

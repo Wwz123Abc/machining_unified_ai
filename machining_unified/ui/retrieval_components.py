@@ -133,8 +133,19 @@ def render_semantic_results(
         return
     for cell, hit, index in _grid(items):
         with cell, st.container(border=True):
-            st.write(f"**{index}. {hit.part_id}** · 语义相似度 **{hit.score:.3f}**")
-            st.caption(f"来源：`{hit.source_file}` ｜方式：BGE 中文语义向量")
+            if hit.rerank_score is None:
+                st.write(f"**{index}. {hit.part_id}** · 语义相似度 **{hit.score:.3f}**")
+                st.caption(f"来源：`{hit.source_file}` ｜方式：BGE 中文语义向量")
+            else:
+                # 名次由几何分决定，语义分只表示召回强度。两个分数都要出现，
+                # 否则就是用一种证据的数值冒充另一种证据的排序。
+                st.write(f"**{index}. {hit.part_id}** · 几何重排分 **{hit.rerank_score:.3f}**")
+                st.caption(
+                    f"语义召回分 {hit.score:.3f}（仅决定是否进入候选，本库上区分度极低）"
+                    f" ｜来源：`{hit.source_file}`"
+                )
+                if hit.rerank_reasons:
+                    st.caption("重排依据：" + "；".join(hit.rerank_reasons))
             record = catalog_by_id.get(hit.part_id)
             if record:
                 with _preview_slot():

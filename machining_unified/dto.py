@@ -43,12 +43,20 @@ class GeometryHit:
 
 @dataclass(frozen=True)
 class SemanticHit:
-    """BGE 中文语义召回结果。"""
+    """BGE 中文语义召回结果。
+
+    ``rerank_score`` 不为空时，名次由它决定、``score`` 仅表示召回强度。
+    两者必须同时展示：实测语义分在本库上几乎无区分度
+    （全部候选落在 0.952~0.971，top-3 极差仅 0.005），
+    若只显示语义分而按几何分排序，界面就成了用一种证据的数值冒充另一种证据的排序。
+    """
 
     part_id: str
     score: float
     source_file: str
     document: Document
+    rerank_score: float | None = None
+    rerank_reasons: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

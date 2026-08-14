@@ -16,11 +16,12 @@ from langchain_openai import ChatOpenAI
 from machining_unified.cad.extraction import textify_cad_features
 from machining_unified.config.paths import CAD_VECTOR_DIR, PROJECT_ROOT
 from machining_unified.dto import SemanticHit
-from machining_unified.knowledge.engineering import enriched_text
+from machining_unified.knowledge.manifests import assembly_manifest_for
 
 
 VECTOR_DIR = CAD_VECTOR_DIR
 EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
+
 
 
 # 向量索引由 scripts/build_vector_index.py 离线构建；查询时仅连接它，
@@ -51,11 +52,56 @@ def get_vector_store() -> Chroma:
     )
 
 
+def semantic_document_text(record: dict[str, Any]) -> str:
+    """构造语义索引文本：族级叙述 + 逐模型的区分性几何量。
+
+    查询侧与文档侧必须共用本函数。两边文本构造方式不同会引入系统性不对称：
+    公共 token 主导余弦相似度，真正的数值差异反被淹没。
+
+    关于是否保留 ``enriched_text`` 的族级功能/装配/维护叙述，实测结论如下。
+    这些叙述在同族内 24/24 完全一致，对"以模型搜模型"确实是噪声——去掉后
+    自检索命中率从 37.5% 升到 62.5%。但它同时是"以文字搜模型"唯一能匹配
+    功能词（旋转支承、容纳轴承）的信号，去掉后功能性查询的纯语义命中
+    从 3/3 掉到 1/3 甚至 0/3。
+
+    真正的解法不在索引文本，而在排序：STEP 分支改为几何重排后，
+    名次不再依赖语义分，保留叙述反而让候选集更集中在同族
+    （异族混入 10% -> 4%）。因此叙述保留，噪声问题由重排解决。
+    """
+
+    features = record.get("features", {})
+    semantics = features.get("geometry_semantics") or {}
+    surfaces = features.get("surface_types", {})
+    assembly = features.get("assembly_structure", {})
+    lines = [
+        record.get("search_text") or textify_cad_features(record),
+        f"形态：{semantics.get('shape')}；复杂度：{semantics.get('complexity')}；{semantics.get('radius_profile')}。",
+        f"长径比 {semantics.get('aspect_ratio')}；扁平比 {semantics.get('thin_ratio')}。",
+        f"拓扑：实体 {features.get('solid_count')}，面 {features.get('face_count')}，"
+        f"边 {features.get('edge_count')}，顶点 {features.get('vertex_count')}，"
+        f"圆柱面 {surfaces.get('cylinder')}，平面 {surfaces.get('plane')}。",
+    ]
+    if assembly.get("available"):
+        lines.append(
+            f"STEP 产品树：自由根 {assembly.get('free_shape_count')}，"
+            f"装配根 {assembly.get('assembly_root_count')}。"
+        )
+    manifest = assembly_manifest_for(str(record.get("part_id", "")))
+    if manifest:
+        components = "、".join(item["name"] for item in manifest["bom_items"][:8] if item["name"])
+        lines.append(f"真实 BOM：{manifest['component_count']} 个物料条目；典型部件：{components}。")
+    # 延迟导入：engineering 在函数体内反向引用 cad_rag，模块级导入会成环。
+    from machining_unified.knowledge.engineering import enriched_text
+
+    lines.append(enriched_text(record))
+    return "\n".join(lines)
+
+
 def build_cad_documents(records: list[dict[str, Any]]) -> list[Document]:
-    # 文本内容提供语义和几何语言；元数据仅保留界面展示可溯源证据所需的最小标识。
+    # 文本内容只保留区分性几何信号；元数据仅保留界面展示可溯源证据所需的最小标识。
     return [
         Document(
-            page_content=enriched_text(record) + "\n" + (record.get("search_text") or textify_cad_features(record)),
+            page_content=semantic_document_text(record),
             metadata={
                 "part_id": record.get("part_id", ""),
                 "model_group_id": record.get("model_group_id", record.get("part_id", "")),
@@ -68,9 +114,11 @@ def build_cad_documents(records: list[dict[str, Any]]) -> list[Document]:
 
 
 def retrieve_cad_rag(query_record: dict[str, Any], top_k: int = 5) -> list[dict[str, Any]]:
-    """用 CAD 特征文本做语义召回，并把距离转换为 0~1 相似度。"""
-    query_text = query_record.get("search_text") or textify_cad_features(query_record)
-    pairs = get_vector_store().similarity_search_with_score(query_text, k=top_k)
+    """用 CAD 特征文本做语义召回，并把距离转换为 0~1 相似度。
+
+    查询文本与索引文本共用 :func:`semantic_document_text`，保证两侧同构。
+    """
+    pairs = get_vector_store().similarity_search_with_score(semantic_document_text(query_record), k=top_k)
     results: list[dict[str, Any]] = []
     for document, distance in pairs:
         # Chroma 返回余弦距离；进行防御性截断，使展示分数始终位于 0 到 1，
