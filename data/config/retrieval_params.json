@@ -1,0 +1,40 @@
+{
+  "enterprise": {
+    "vector": 0.72,
+    "lexical": 0.28
+  },
+  "ensemble": {
+    "lexical": 0.35,
+    "semantic": 0.65
+  },
+  "hybrid": {
+    "ensemble": 0.7,
+    "ensemble_lexical": 0.15,
+    "ensemble_graph": 0.15,
+    "fallback_vector": 0.55,
+    "fallback_lexical": 0.35,
+    "fallback_graph": 0.1
+  },
+  "unified_embedding": {
+    "text": 0.35,
+    "geometry": 0.65
+  },
+  "geometry_similarity": {
+    "part_family": 0.15,
+    "dimensions": 0.2,
+    "cylinder_present": 0.07,
+    "plane_present": 0.03,
+    "machining_candidates": 0.05,
+    "material": 0.1,
+    "surface_treatment": 0.05,
+    "roughness_ra": 0.05,
+    "precision_requirement": 0.08,
+    "heat_treatment": 0.05,
+    "hole_types": 0.07,
+    "keyways": 0.04,
+    "threads": 0.04,
+    "chamfers": 0.02,
+    "fillets": 0.02,
+    "assembly_relations": 0.03
+  }
+}

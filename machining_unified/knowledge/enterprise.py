@@ -20,6 +20,7 @@ from rank_bm25 import BM25Plus
 from machining_unified.cad.extraction import textify_cad_features
 from machining_unified.cad.retrieval import load_cad_catalog
 from machining_unified.config.paths import ASSEMBLY_PACKAGES_DIR, ENTERPRISE_VECTOR_DIR, PROJECT_ROOT
+from machining_unified.config.retrieval_params import get_retrieval_params
 from machining_unified.knowledge.part_ids import extract_part_ids, normalized_part_id
 from machining_unified.retrieval.cad_rag import get_embeddings
 
@@ -188,6 +189,7 @@ def _bm25_scores(question: str, documents: tuple[Document, ...]) -> dict[str, fl
 def retrieve_enterprise_knowledge(question: str, top_k: int = 5) -> list[dict[str, Any]]:
     """融合真实资料的向量语义与关键词检索，并保留每条来源。"""
     documents = enterprise_documents()
+    weights = get_retrieval_params().enterprise
     bm25_scores = _bm25_scores(question, documents)
     requested_part_ids = extract_part_ids(question)
     vector_scores: dict[str, float] = {}
@@ -209,7 +211,7 @@ def retrieve_enterprise_knowledge(question: str, top_k: int = 5) -> list[dict[st
         source_id = document.metadata["source_id"]
         vector = vector_scores.get(source_id, 0.0)
         lexical = bm25_scores.get(source_id, 0.0)
-        score = 0.72 * vector + 0.28 * lexical if vector_scores else lexical
+        score = weights.vector * vector + weights.lexical * lexical if vector_scores else lexical
         document_part_ids = extract_part_ids(
             " ".join(
                 [

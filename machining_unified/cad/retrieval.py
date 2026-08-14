@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from machining_unified.config.paths import CAD_CATALOG_PATH
+from machining_unified.config.retrieval_params import get_retrieval_params
 
 # 本模块是可解释、以几何为先的“以模型搜模型”分支。
 # 它不依赖 Chroma，因此向量索引故障不会影响结构相似检索。
@@ -69,48 +70,50 @@ def score_cad_similarity(query: dict[str, Any], candidate: dict[str, Any]) -> tu
             score += weight
             reasons.append(label)
 
+    weights = get_retrieval_params().geometry_similarity
+
     q_type = query.get("part_family") or query.get("features", {}).get("geometry_semantics", {}).get("family")
     c_type = candidate.get("part_family") or candidate.get("features", {}).get("geometry_semantics", {}).get("family")
-    add_match("零件类型候选一致", 0.15, bool(q_type and c_type and q_type == c_type), bool(q_type and c_type))
+    add_match("零件类型候选一致", weights.part_family, bool(q_type and c_type and q_type == c_type), bool(q_type and c_type))
 
     dimensions = _dimension_similarity(_dimension_vector(query), _dimension_vector(candidate))
-    weight_total += 0.20
-    score += 0.20 * dimensions
+    weight_total += weights.dimensions
+    score += weights.dimensions * dimensions
     if dimensions >= 0.7:
         reasons.append(f"外包络尺寸比例相近（{dimensions:.2f}）")
 
     q_surfaces = q_features.get("surface_types", {})
     c_surfaces = c_features.get("surface_types", {})
     if q_surfaces.get("cylinder", 0) and c_surfaces.get("cylinder", 0):
-        add_match("均包含圆柱面", 0.07, True)
+        add_match("均包含圆柱面", weights.cylinder_present, True)
     if q_surfaces.get("plane", 0) and c_surfaces.get("plane", 0):
-        add_match("均包含平面/端面", 0.03, True)
+        add_match("均包含平面/端面", weights.plane_present, True)
 
     candidate_similarity = _candidate_similarity(
         q_features.get("machining_feature_candidates", []),
         c_features.get("machining_feature_candidates", []),
     )
-    weight_total += 0.05
-    score += 0.05 * candidate_similarity
+    weight_total += weights.machining_candidates
+    score += weights.machining_candidates * candidate_similarity
     if candidate_similarity:
         reasons.append("加工特征候选有交集")
 
     q_design = query.get("design_metadata", {})
     c_design = candidate.get("design_metadata", {})
     # 这些权重仅在企业工程图或 BOM 提供元数据后才会生效；显式保留它们，
-    # 可防止系统虚构不存在的设计事实。
+    # 可防止系统虚构不存在的设计事实。权重值来自外置配置，字段名与配置项同名。
     comparable_fields = {
-        "material": ("材料一致", 0.10),
-        "surface_treatment": ("表面处理一致", 0.05),
-        "roughness_ra": ("粗糙度要求一致", 0.05),
-        "precision_requirement": ("尺寸公差/精度一致", 0.08),
-        "heat_treatment": ("热处理要求一致", 0.05),
-        "hole_types": ("孔类型一致", 0.07),
-        "keyways": ("键槽特征一致", 0.04),
-        "threads": ("螺纹特征一致", 0.04),
-        "chamfers": ("倒角特征一致", 0.02),
-        "fillets": ("圆角特征一致", 0.02),
-        "assembly_relations": ("装配关系一致", 0.03),
+        "material": ("材料一致", weights.material),
+        "surface_treatment": ("表面处理一致", weights.surface_treatment),
+        "roughness_ra": ("粗糙度要求一致", weights.roughness_ra),
+        "precision_requirement": ("尺寸公差/精度一致", weights.precision_requirement),
+        "heat_treatment": ("热处理要求一致", weights.heat_treatment),
+        "hole_types": ("孔类型一致", weights.hole_types),
+        "keyways": ("键槽特征一致", weights.keyways),
+        "threads": ("螺纹特征一致", weights.threads),
+        "chamfers": ("倒角特征一致", weights.chamfers),
+        "fillets": ("圆角特征一致", weights.fillets),
+        "assembly_relations": ("装配关系一致", weights.assembly_relations),
     }
     for field, (label, weight) in comparable_fields.items():
         left, right = q_design.get(field), c_design.get(field)

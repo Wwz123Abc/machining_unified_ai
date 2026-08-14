@@ -16,6 +16,10 @@ MULTIMODAL_MANIFEST_PATH = CATALOG_DIR / "unified_multimodal_manifest.json"
 KNOWLEDGE_DIR = DATA_ROOT / "knowledge"
 TEMPLATES_DIR = KNOWLEDGE_DIR / "templates"
 
+# 检索打分权重的外置配置；文件不存在时使用代码内的默认值。
+CONFIG_DIR = DATA_ROOT / "config"
+RETRIEVAL_PARAMS_PATH = CONFIG_DIR / "retrieval_params.json"
+
 ENTERPRISE_DIR = DATA_ROOT / "enterprise"
 CAD_SAMPLES_DIR = ENTERPRISE_DIR / "cad_samples"
 ASSEMBLY_PACKAGES_DIR = ENTERPRISE_DIR / "assembly_packages"

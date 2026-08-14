@@ -94,6 +94,7 @@ Streamlit app.py
 
 ```text
 data/
+├─ config/                   检索打分权重（唯一可调参入口，不改源码）
 ├─ catalogs/                 CAD 目录、去重清单、part_id 跨模态清单
 ├─ knowledge/                CAD 特征模板
 ├─ enterprise/
@@ -206,6 +207,7 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 
 ```powershell
 .\.venv\Scripts\python.exe tests\test_upload_flows.py
+.\.venv\Scripts\python.exe tests\test_retrieval_params.py
 ```
 
 用 Streamlit 官方 `AppTest` 在进程内跑真实 `app.py`，覆盖 STEP 上传、图片上传、
@@ -243,7 +245,8 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 | 调整页面布局、按钮或提示文字 | `machining_unified/ui/`，必要时修改 `app.py` |
 | 调整工业风颜色和样式 | `assets/industrial.css`、`.streamlit/config.toml` |
 | 修改 STEP 几何特征 | `machining_unified/cad/extraction.py`，随后重建相关索引 |
-| 修改几何相似度权重 | `machining_unified/cad/retrieval.py` |
+| 调整任何检索打分权重 | `data/config/retrieval_params.json`（**不要改源码**；改完刷新页面即可，`unified_embedding` 除外，它需要重建多模态索引） |
+| 增删相似度比较维度 | `machining_unified/config/retrieval_params.py` 加字段，再在对应模块接线 |
 | 修改 CAD 文本 RAG | `machining_unified/retrieval/cad_rag.py` |
 | 修改 BM25、类别路由或知识图谱 | `machining_unified/knowledge/engineering.py` |
 | 修改图片或 CLIP 检索 | `machining_unified/cad/visual.py`、`machining_unified/retrieval/multimodal.py` |

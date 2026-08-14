@@ -11,6 +11,7 @@ from typing import Any
 
 from machining_unified.cad.extraction import classify_part_family, geometry_semantics
 from machining_unified.cad.retrieval import load_cad_catalog
+from machining_unified.config.retrieval_params import get_retrieval_params
 from machining_unified.knowledge.manifests import assembly_manifest_for, load_assembly_manifests
 
 logger = logging.getLogger(__name__)
@@ -250,7 +251,8 @@ def _langchain_ensemble_rank(query: str, records: list[dict[str, Any]]) -> dict[
     documents = build_cad_documents(records)
     lexical = BM25Retriever.from_documents(documents, preprocess_func=tokenize)
     semantic = get_vector_store().as_retriever(search_kwargs={"k": len(records), "filter": {"part_id": {"$in": [record["part_id"] for record in records]}}})
-    ensemble = EnsembleRetriever(retrievers=[lexical, semantic], weights=[0.35, 0.65])
+    weights = get_retrieval_params().ensemble
+    ensemble = EnsembleRetriever(retrievers=[lexical, semantic], weights=[weights.lexical, weights.semantic])
     ordered = ensemble.invoke(query)
     return {document.metadata.get("part_id", ""): 1.0 - index / max(1, len(ordered)) for index, document in enumerate(ordered)}
 
@@ -258,6 +260,7 @@ def _langchain_ensemble_rank(query: str, records: list[dict[str, Any]]) -> dict[
 def hybrid_retrieve(query: str, top_k: int = 5, candidates: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     # 各检索分支独立降级；警告随结果返回，使界面能披露向量或融合分支不可用。
     records = candidates or load_cad_catalog()
+    weights = get_retrieval_params().hybrid
     vector_scores: dict[str, float] = {}
     retrieval_warnings: list[str] = []
     try:
@@ -282,7 +285,11 @@ def hybrid_retrieve(query: str, top_k: int = 5, candidates: list[dict[str, Any]]
         lexical = bm25_scores.get(record["part_id"], 0.0)
         ensemble = ensemble_scores.get(record["part_id"], 0.0)
         graph_score = _family_score(query, profile)
-        score = ensemble * 0.70 + lexical * 0.15 + graph_score * 0.15 if ensemble_scores else vector * 0.55 + lexical * 0.35 + graph_score * 0.10
+        score = (
+            ensemble * weights.ensemble + lexical * weights.ensemble_lexical + graph_score * weights.ensemble_graph
+            if ensemble_scores
+            else vector * weights.fallback_vector + lexical * weights.fallback_lexical + graph_score * weights.fallback_graph
+        )
         evidence = []
         if vector:
             evidence.append("Chroma 向量")

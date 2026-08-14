@@ -15,13 +15,12 @@ import numpy as np
 from machining_unified.cad.extraction import textify_cad_features
 from machining_unified.cad.visual import get_clip_model, model_previews
 from machining_unified.config.paths import MULTIMODAL_MANIFEST_PATH, MULTIMODAL_VECTOR_DIR
+from machining_unified.config.retrieval_params import get_retrieval_params
 
 
 UNIFIED_VECTOR_DIR = MULTIMODAL_VECTOR_DIR
 UNIFIED_MANIFEST = MULTIMODAL_MANIFEST_PATH
 COLLECTION_NAME = "unified_cad_models"
-TEXT_WEIGHT = 0.35
-GEOMETRY_WEIGHT = 0.65
 
 
 def normalize(vector: np.ndarray) -> np.ndarray:
@@ -49,12 +48,15 @@ def _record_modal_vectors(record: dict[str, Any]) -> tuple[np.ndarray, np.ndarra
     text = factual_cad_text(record)
     text_vector = np.asarray(model.encode([text], normalize_embeddings=True)[0], dtype=np.float32)
     geometry_vector, view_count = _geometry_vector(record)
+    weights = get_retrieval_params().unified_embedding
+    # 权重写进审计信息：索引是用哪一组权重合成的必须可回溯，
+    # 否则事后调过配置就无法判断库内向量与当前配置是否一致。
     audit = {
         "text_embedding_dim": int(text_vector.size),
         "geometry_embedding_dim": int(geometry_vector.size),
         "render_view_count": view_count,
-        "text_weight": TEXT_WEIGHT,
-        "geometry_weight": GEOMETRY_WEIGHT,
+        "text_weight": weights.text,
+        "geometry_weight": weights.geometry,
         "method": "CLIP shared image-text space + eight real STEP mesh views",
     }
     return text_vector, geometry_vector, audit
@@ -67,7 +69,7 @@ def build_unified_embedding(record: dict[str, Any]) -> tuple[np.ndarray, dict[st
     它是共享空间原型，不是已经用企业数据微调过的原生点云编码器。
     """
     text_vector, geometry_vector, audit = _record_modal_vectors(record)
-    unified_vector = normalize(TEXT_WEIGHT * text_vector + GEOMETRY_WEIGHT * geometry_vector)
+    unified_vector = normalize(audit["text_weight"] * text_vector + audit["geometry_weight"] * geometry_vector)
     return unified_vector, audit
 
 
