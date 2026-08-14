@@ -30,6 +30,9 @@ from OCP.TopoDS import TopoDS
 
 
 MAX_TRIANGLES = 3_000
+# 预览高度。结果页会同时出现多个画布，过高会把证据信息挤出首屏；
+# 缩小后仍足以辨认零件形态，也降低了自动旋转时的每帧绘制量。
+PREVIEW_HEIGHT = 260
 
 
 @lru_cache(maxsize=32)
@@ -82,6 +85,7 @@ _VIEWER = st.components.v2.component(
     css="""
         :host { display: block; height: 100%; overflow: hidden; }
         canvas {
+            /* 尺寸由 JS 按宿主容器显式写入 style，这里只留首帧前的兜底值。 */
             width: 100%; height: 100%; min-height: 0; max-height: 100%; display: block;
             box-sizing: border-box; overflow: hidden;
             border: 1px solid var(--st-border-color); border-radius: var(--st-radius-md);
@@ -95,6 +99,9 @@ export default function(component) {
   const canvas = parentElement.querySelector('canvas');
   if (!canvas || !data?.triangles?.length) return;
   const context = canvas.getContext('2d');
+  // 组件的 parentElement 是 ShadowRoot（没有 getBoundingClientRect），
+  // 其 .host 才是 Streamlit 按 height 参数给定确定高度的宿主元素。
+  const hostElement = parentElement.host || canvas.parentElement || canvas;
   let yaw = 0.65;
   let pitch = -0.45;
   let zoom = 1;
@@ -110,12 +117,19 @@ export default function(component) {
   }
 
   function draw() {
-    const rect = canvas.getBoundingClientRect();
+    // 按宿主容器（Streamlit 用 height 参数给定的确定高度）显式设定画布像素尺寸。
+    // 不能量 canvas 自身：它的 CSS height:100% 在这里解析不到确定的父高度，
+    // 会退回 height 属性值，而该属性又由上一次 draw 写入——形成自我放大的反馈环，
+    // 实测会让画布变成容器的两倍高并被 overflow:hidden 裁掉下半部分。
+    const host = hostElement.getBoundingClientRect();
+    const width = Math.max(1, host.width);
+    const height = Math.max(1, host.height);
     const scale = Math.min(2, window.devicePixelRatio || 1);
-    canvas.width = Math.max(1, Math.floor(rect.width * scale));
-    canvas.height = Math.max(1, Math.floor(rect.height * scale));
+    canvas.style.width = width + 'px';
+    canvas.style.height = height + 'px';
+    canvas.width = Math.max(1, Math.floor(width * scale));
+    canvas.height = Math.max(1, Math.floor(height * scale));
     context.setTransform(scale, 0, 0, scale, 0, 0);
-    const width = rect.width, height = rect.height;
     context.clearRect(0, 0, width, height);
     const projected = data.triangles.map((triangle) => {
       const points = [];
@@ -128,11 +142,17 @@ export default function(component) {
     });
     // 每次旋转后按当前投影外包范围重新计算缩放和中心。
     // 因而不论模型是细长轴、扁平板还是大型装配体，均可完整落在窗口内。
-    const flatPoints = projected.flatMap((triangle) => triangle.points);
-    const minX = Math.min(...flatPoints.map((point) => point[0]));
-    const maxX = Math.max(...flatPoints.map((point) => point[0]));
-    const minY = Math.min(...flatPoints.map((point) => point[1]));
-    const maxY = Math.max(...flatPoints.map((point) => point[1]));
+    // 用显式循环求包围范围：自动旋转会持续重绘，而 Math.min(...arr) 对上万个
+    // 元素展开参数在每帧都做一次，开销明显且有触发调用栈上限的风险。
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const triangle of projected) {
+      for (const point of triangle.points) {
+        if (point[0] < minX) minX = point[0];
+        if (point[0] > maxX) maxX = point[0];
+        if (point[1] < minY) minY = point[1];
+        if (point[1] > maxY) maxY = point[1];
+      }
+    }
     const spanX = Math.max(maxX - minX, 1e-6);
     const spanY = Math.max(maxY - minY, 1e-6);
     const modelScale = zoom * 0.88 * Math.min(width / spanX, height / spanY);
@@ -157,7 +177,49 @@ export default function(component) {
     }
   }
 
-  const pointerDown = (event) => { dragging = true; previous = event; canvas.setPointerCapture(event.pointerId); };
+  // 自动旋转。一次检索可能同时渲染近十个画布，每个最多三千个三角面，
+  // 因此有两道限流：只有滚动进视口的画布才动，且重绘节流到约 25fps。
+  // 用户一旦拖动就永久接管，不再自动转，避免手动对准的角度被转走。
+  const FRAME_INTERVAL = 40;
+  const YAW_PER_SECOND = 0.35;
+  let autoRotate = true;
+  let visible = false;
+  let frame = null;
+  let lastFrameAt = 0;
+
+  function tick(now) {
+    if (!autoRotate || !visible) { frame = null; return; }
+    if (now - lastFrameAt >= FRAME_INTERVAL) {
+      yaw += YAW_PER_SECOND * ((now - lastFrameAt) / 1000);
+      lastFrameAt = now;
+      draw();
+    }
+    frame = requestAnimationFrame(tick);
+  }
+
+  function startAuto() {
+    if (frame === null && autoRotate && visible) {
+      lastFrameAt = performance.now();
+      frame = requestAnimationFrame(tick);
+    }
+  }
+
+  function stopAuto() {
+    if (frame !== null) { cancelAnimationFrame(frame); frame = null; }
+  }
+
+  const observer = new IntersectionObserver((entries) => {
+    visible = entries.some((entry) => entry.isIntersecting);
+    if (visible) startAuto(); else stopAuto();
+  }, { threshold: 0.1 });
+  observer.observe(canvas);
+
+  const pointerDown = (event) => {
+    // 交给用户控制：停掉自动旋转并释放动画帧。
+    autoRotate = false;
+    stopAuto();
+    dragging = true; previous = event; canvas.setPointerCapture(event.pointerId);
+  };
   const pointerMove = (event) => {
     if (!dragging || !previous) return;
     yaw += (event.clientX - previous.clientX) * 0.012;
@@ -168,6 +230,8 @@ export default function(component) {
   const wheel = (event) => {
     // 鼠标滚轮围绕模型中心缩放；限制倍率以防模型缩得过小或放得过大。
     event.preventDefault();
+    autoRotate = false;
+    stopAuto();
     zoom = Math.max(0.35, Math.min(4, zoom * (event.deltaY < 0 ? 1.12 : 0.89)));
     draw();
   };
@@ -178,6 +242,10 @@ export default function(component) {
   canvas.addEventListener('wheel', wheel, { passive: false });
   draw();
   return () => {
+    // 组件卸载时必须同时停掉动画帧和观察器，否则 Streamlit 重跑后
+    // 旧画布的 rAF 循环会继续持有已废弃的 canvas 与网格数据。
+    stopAuto();
+    observer.disconnect();
     canvas.removeEventListener('pointerdown', pointerDown);
     canvas.removeEventListener('pointermove', pointerMove);
     canvas.removeEventListener('pointerup', pointerUp);
@@ -189,7 +257,7 @@ export default function(component) {
 )
 
 
-def render_step_payload(payload: dict[str, Any], *, key: str, height: int = 420) -> None:
+def render_step_payload(payload: dict[str, Any], *, key: str, height: int = PREVIEW_HEIGHT) -> None:
     """渲染已提取好的 STEP 网格。
 
     上传的查询模型使用临时文件，检索结束后会被删除；保留网格数据本身，
@@ -199,19 +267,19 @@ def render_step_payload(payload: dict[str, Any], *, key: str, height: int = 420)
         st.warning("没有可显示的 STEP 三角网格。")
         return
     _VIEWER(data=payload, key=key, height=height)
-    st.caption(f"真实 STEP 网格：{payload['triangle_count']} 个三角面；拖动模型可旋转查看。")
+    st.caption(f"真实 STEP 网格：{payload['triangle_count']} 个三角面；自动旋转中，拖动可接管视角、滚轮缩放。")
 
 
-def render_step_file(source: Path, *, key: str, height: int = 420) -> None:
-    """将指定的真实 STEP 文件显示为可拖动旋转的三维视图。"""
+def render_step_file(source: Path, *, key: str, height: int = PREVIEW_HEIGHT) -> None:
+    """将指定的真实 STEP 文件显示为自动旋转、可拖动接管的三维视图。"""
     if not source.is_file():
         st.warning("该检索结果的 STEP 源文件不存在，无法显示三维模型。")
         return
     render_step_payload(step_mesh_payload(str(source.resolve())), key=key, height=height)
 
 
-def render_step_model(record: dict[str, Any], *, key: str, height: int = 420) -> None:
-    """将目录记录对应的真实 STEP 模型显示为可拖动旋转的三维视图。"""
+def render_step_model(record: dict[str, Any], *, key: str, height: int = PREVIEW_HEIGHT) -> None:
+    """将目录记录对应的真实 STEP 模型显示为自动旋转、可拖动接管的三维视图。"""
     source_file = record.get("source_file")
     if not source_file and record.get("part_id"):
         # 兼容热更新前已存在的检索结果：旧结果对象可能没有 source_file，
