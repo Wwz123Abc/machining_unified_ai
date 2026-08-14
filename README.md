@@ -63,6 +63,16 @@ DEEPSEEK_MODEL=deepseek-chat
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 ```
 
+日志相关环境变量（均为可选，有默认值）：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `LOG_LEVEL` | `INFO` | 取值非法时自动回退到 `INFO` |
+| `LOG_FORMAT` | `json` | `json` 为单行结构化日志；`text` 便于本地直读 |
+| `LOG_FILE` | 空 | 留空输出到 stderr；指定路径则写文件并自动创建父目录，不可写时回退 stderr 且不阻断启动 |
+
+JSON 日志刻意使用 ASCII 转义（中文形如 `文字`）。日志要经过 stderr、容器运行时和采集器多段管道，任一段用非 UTF-8 解码都会产生乱码；转义后任何 JSON 解析器都能还原原文。
+
 `.env`、企业资料、STEP 文件、聊天历史和向量库均已加入 `.gitignore`。
 
 ## 重建索引

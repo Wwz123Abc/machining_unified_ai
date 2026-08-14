@@ -13,12 +13,15 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from machining_unified.cad.extraction import extract_step_features, textify_cad_features  # noqa: E402
+from machining_unified.config.logging_setup import configure_logging  # noqa: E402
 from machining_unified.config.paths import (  # noqa: E402
     CAD_CATALOG_PATH,
     CAD_DUPLICATES_PATH,
     CAD_SAMPLES_DIR,
 )
 from machining_unified.knowledge.manifests import resolve_design_metadata  # noqa: E402
+
+logger = configure_logging()
 
 
 SAMPLE_DIR = CAD_SAMPLES_DIR
@@ -161,8 +164,20 @@ def validate_records(records: list[dict[str, Any]], duplicate_records: list[dict
 
 
 def main() -> None:
+    logger.info("开始构建 CAD 目录", extra={"sample_dir": str(SAMPLE_DIR)})
     records, duplicate_records = build_catalog()
     validate_records(records, duplicate_records)
+    degraded = [r["part_id"] for r in records if r["features"].get("geometry_confidence") != "high"]
+    backfilled = [r["part_id"] for r in records if any(v not in (None, [], "") for v in r["design_metadata"].values())]
+    logger.info(
+        "CAD 目录构建完成",
+        extra={
+            "searchable_models": len(records),
+            "duplicate_files": len(duplicate_records),
+            "degraded_geometry": degraded,
+            "design_metadata_backfilled": backfilled,
+        },
+    )
     OUTPUT.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
     DUPLICATE_OUTPUT.write_text(
         json.dumps(

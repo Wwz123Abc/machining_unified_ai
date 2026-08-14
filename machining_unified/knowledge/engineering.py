@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections import defaultdict
 from functools import lru_cache
@@ -11,6 +12,8 @@ from typing import Any
 from machining_unified.cad.extraction import classify_part_family, geometry_semantics
 from machining_unified.cad.retrieval import load_cad_catalog
 from machining_unified.knowledge.manifests import assembly_manifest_for, load_assembly_manifests
+
+logger = logging.getLogger(__name__)
 
 
 # 每条检索结果保留独立的向量、BM25、Ensemble 与图谱贡献，
@@ -230,6 +233,9 @@ def _bm25_rank(query: str, records: list[dict[str, Any]]) -> dict[str, float]:
         span = maximum - minimum
         return {record["part_id"]: ((value - minimum) / span if span else 0.0) for record, value in zip(records, values)}
     except Exception:
+        # 此前是完全静默的降级：BM25 失效后改用类别相似度顶替词法分，
+        # 排序质量明显下降却不留任何痕迹。必须记录。
+        logger.exception("BM25 词法排序不可用，已降级为类别相似度", extra={"record_count": len(records)})
         return {record["part_id"]: _family_score(query, engineering_profile(record)) for record in records}
 
 
@@ -260,11 +266,13 @@ def hybrid_retrieve(query: str, top_k: int = 5, candidates: list[dict[str, Any]]
         for document, distance in get_vector_store().similarity_search_with_score(query, k=max(top_k * 5, len(records))):
             vector_scores[document.metadata.get("part_id", "")] = max(0.0, min(1.0, 1.0 - float(distance)))
     except Exception as error:
+        logger.exception("CAD 向量检索不可用，已降级为 BM25 与知识规则", extra={"record_count": len(records)})
         retrieval_warnings.append(f"向量检索不可用，已降级为 BM25 与知识规则：{error}")
     bm25_scores = _bm25_rank(query, records)
     try:
         ensemble_scores = _langchain_ensemble_rank(query, records)
     except Exception as error:
+        logger.exception("EnsembleRetriever 不可用，已使用独立混合排序", extra={"record_count": len(records)})
         ensemble_scores = {}
         retrieval_warnings.append(f"LangChain EnsembleRetriever 不可用，已使用独立混合排序：{error}")
     results = []

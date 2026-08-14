@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from functools import lru_cache
@@ -22,6 +23,8 @@ from machining_unified.config.paths import ASSEMBLY_PACKAGES_DIR, ENTERPRISE_VEC
 from machining_unified.knowledge.part_ids import extract_part_ids, normalized_part_id
 from machining_unified.retrieval.cad_rag import get_embeddings
 
+
+logger = logging.getLogger(__name__)
 
 KB_VECTOR_DIR = ENTERPRISE_VECTOR_DIR
 
@@ -107,6 +110,9 @@ def _drawing_documents() -> list[Document]:
             reader = PdfReader(path)
             pages = [page.extract_text() or "" for page in reader.pages]
         except Exception as error:
+            # 单份图纸损坏不能中断整个证据库构建，但必须留下可追溯记录，
+            # 否则这份图纸会以“无法读取”的占位文本静默进入索引。
+            logger.exception("工程图 PDF 解析失败", extra={"source_file": _relative_path(path)})
             pages = [f"工程图 PDF 无法读取：{error}"]
         for page_index, text in enumerate(pages, start=1):
             body = text.strip() or "该工程图页未提取到可搜索文字，需要 OCR 后才能问答。"
@@ -190,6 +196,12 @@ def retrieve_enterprise_knowledge(question: str, top_k: int = 5) -> list[dict[st
         for document, distance in enterprise_vector_store().similarity_search_with_score(question, k=min(len(documents), top_k * 4)):
             vector_scores[document.metadata["source_id"]] = max(0.0, min(1.0, 1.0 - float(distance)))
     except Exception as error:
+        # 向量库缺失或损坏时降级为纯 BM25。降级会显著改变召回质量，
+        # 必须同时上报给界面（warning）和日志（可追溯），不能只提示用户。
+        logger.exception(
+            "企业知识库向量检索不可用，已降级为关键词检索",
+            extra={"vector_dir": str(KB_VECTOR_DIR), "document_count": len(documents)},
+        )
         warning = f"企业知识库向量检索不可用，已降级为关键词检索：{error}"
 
     results = []
@@ -292,6 +304,10 @@ def answer_enterprise_question(
                 base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
                 temperature=0,
             )).invoke({"question": question, "context": context, "history": _history_text(history)})
+            logger.info(
+                "企业资料问答生成完成",
+                extra={"mode": "strict", "evidence_count": len(evidence), "identifier_hits": sum(1 for i in evidence if i["identifier_match"])},
+            )
             return {
                 "answer": response.content if isinstance(response.content, str) else str(response.content),
                 "evidence": evidence,
@@ -299,6 +315,12 @@ def answer_enterprise_question(
                 "warning": warning,
             }
         except Exception as error:
+            # DeepSeek 不可达时退回本地证据摘要。这是外部依赖故障，
+            # 必须记录，否则线上只会看到“回答质量突然变差”而查不到原因。
+            logger.exception(
+                "严谨模式模型生成失败，已退回本地证据摘要",
+                extra={"mode": "strict", "base_url": os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"), "evidence_count": len(evidence)},
+            )
             warning = "；".join(filter(None, [warning, f"模型生成不可用，已返回资料摘要：{error}"]))
 
     sources = "\n".join(
@@ -343,6 +365,7 @@ def answer_assistant_question(question: str, top_k: int = 5, history: list[dict[
             model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"), api_key=api_key,
             base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"), temperature=0.3,
         )).invoke({"question": question, "context": context, "history": _history_text(history)})
+        logger.info("AI 助手回答生成完成", extra={"mode": "assistant", "evidence_count": len(evidence)})
         return {
             "answer": response.content if isinstance(response.content, str) else str(response.content),
             "evidence": evidence,
@@ -351,6 +374,10 @@ def answer_assistant_question(question: str, top_k: int = 5, history: list[dict[
             "warning": strict_result.get("warning"),
         }
     except Exception as error:
+        logger.exception(
+            "AI 助手模型生成失败，已退回严谨知识库结果",
+            extra={"mode": "assistant", "base_url": os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"), "evidence_count": len(evidence)},
+        )
         strict_result["warning"] = f"AI 助手生成不可用，已返回严格知识库结果：{error}"
         strict_result["assistant_mode"] = True
         return strict_result

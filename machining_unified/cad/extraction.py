@@ -6,9 +6,12 @@ STEP 文本级摘要，不猜测尺寸。输出结构可通过 part_id 与其他
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 # 将 STEP 直接测得的事实与后续推导的工程候选分开保存。
@@ -294,8 +297,13 @@ def extract_step_features(
     try:
         geometry = _extract_with_ocp(path)
     except ImportError:
+        # OCP 缺失是部署问题而非数据问题：整个目录都会退化为低置信度文本摘要。
+        logger.error("OCP 不可用，STEP 解析退化为文本摘要", extra={"source_file": str(path), "part_id": part_id})
         geometry = _extract_step_text_summary(path)
     except Exception as error:
+        # 单个 STEP 解析失败只影响该条记录，记录里保留 warnings 供审计，
+        # 同时写日志，避免整批导入时失败被淹没在正常输出里。
+        logger.exception("OCP 几何解析失败，已退化为文本摘要", extra={"source_file": str(path), "part_id": part_id})
         geometry = _extract_step_text_summary(path)
         geometry.setdefault("warnings", []).append(f"OCP 几何解析失败：{error}")
 

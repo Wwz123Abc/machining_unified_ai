@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import streamlit as st
@@ -9,6 +10,7 @@ from PIL import Image
 
 from machining_unified.cad.retrieval import load_cad_catalog
 from machining_unified.cad.viewer import render_step_payload, step_mesh_payload
+from machining_unified.config.logging_setup import configure_logging
 from machining_unified.knowledge.enterprise import answer_assistant_question, answer_enterprise_question
 from machining_unified.retrieval.cad_rag import generate_rag_explanation
 from machining_unified.services.model_search import save_step_upload, search_by_image, search_by_step, search_by_text
@@ -16,6 +18,9 @@ from machining_unified.storage.chat_history import append_message, list_conversa
 from machining_unified.ui import components, retrieval_components
 from machining_unified.ui.styles import apply_industrial_style
 
+
+# 入口负责配置日志；库层只取 logger。该函数幂等，可安全承受 Streamlit 的反复重跑。
+logger = configure_logging()
 
 st.set_page_config(
     page_title="工艺智核｜机械智能制造统一工作台",
@@ -77,7 +82,10 @@ if workspace == "模型检索":
         elif query_mode == "文字描述" and not query_text.strip():
             st.error("请先输入零件描述。", icon=":material/input:")
         elif query_mode == "STEP 模型":
+            # UI 是请求边界：这里刻意捕获 BaseException 之外的所有异常，
+            # 避免一次查询失败让整页崩溃；代价由 logger.exception 记录完整堆栈补偿。
             query_path: Path | None = None
+            started = time.perf_counter()
             try:
                 with progress_slot.status("正在解析 STEP 并执行多路检索", expanded=True) as status:
                     query_path = save_step_upload(uploaded_file)
@@ -92,32 +100,106 @@ if workspace == "模型检索":
                     "query_mesh": query_mesh,
                     "explanation": generate_rag_explanation(results["query"], results["semantic"]),
                 }
+                logger.info(
+                    "STEP 检索完成",
+                    extra={
+                        "query_mode": query_mode,
+                        "file_name": getattr(uploaded_file, "name", None),
+                        "top_k": top_k,
+                        "use_unified": use_unified,
+                        "geometry_hits": len(results["geometry"]),
+                        "semantic_hits": len(results["semantic"]),
+                        "unified_hits": len(results["unified"]),
+                        "triangle_count": query_mesh["triangle_count"],
+                        "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
+                    },
+                )
             except Exception as error:
                 st.session_state.model_search = None
+                logger.exception(
+                    "STEP 检索失败",
+                    extra={
+                        "query_mode": query_mode,
+                        "file_name": getattr(uploaded_file, "name", None),
+                        "top_k": top_k,
+                        "use_unified": use_unified,
+                        "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
+                    },
+                )
                 st.error(f"STEP 检索失败：{error}", icon=":material/error:")
             finally:
-                if query_path and query_path.exists():
-                    query_path.unlink(missing_ok=True)
+                # Windows 上文件可能仍被句柄占用；清理失败不应掩盖上面的真实错误。
+                if query_path is not None:
+                    try:
+                        query_path.unlink(missing_ok=True)
+                    except OSError:
+                        logger.warning("查询临时文件清理失败", extra={"path": str(query_path)})
 
         elif query_mode == "文字描述":
+            started = time.perf_counter()
             try:
                 with progress_slot.status("正在执行中文语义与工程混合检索", expanded=True) as status:
                     results = search_by_text(query_text.strip(), top_k=top_k, use_unified=use_unified)
                     status.update(label="文字模型检索完成", state="complete", expanded=False)
                 st.session_state.model_search = {"mode": query_mode, "results": results}
+                logger.info(
+                    "文字检索完成",
+                    extra={
+                        "query_mode": query_mode,
+                        "query_length": len(query_text.strip()),
+                        "top_k": top_k,
+                        "use_unified": use_unified,
+                        "semantic_hits": len(results["semantic"]),
+                        "hybrid_hits": len(results["hybrid"]),
+                        "families": results["families"],
+                        "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
+                    },
+                )
             except Exception as error:
                 st.session_state.model_search = None
+                logger.exception(
+                    "文字检索失败",
+                    extra={
+                        "query_mode": query_mode,
+                        "query_length": len(query_text.strip()),
+                        "top_k": top_k,
+                        "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
+                    },
+                )
                 st.error(f"文字模型检索失败：{error}", icon=":material/error:")
 
         else:
+            started = time.perf_counter()
             try:
                 image = Image.open(uploaded_file).convert("RGB")
                 with progress_slot.status("正在执行视觉模型检索", expanded=True) as status:
                     results = search_by_image(image, catalog, top_k=top_k, use_unified=use_unified)
                     status.update(label="图片模型检索完成", state="complete", expanded=False)
                 st.session_state.model_search = {"mode": query_mode, "results": results, "query_image": image}
+                logger.info(
+                    "图片检索完成",
+                    extra={
+                        "query_mode": query_mode,
+                        "file_name": getattr(uploaded_file, "name", None),
+                        "image_size": list(image.size),
+                        "top_k": top_k,
+                        "use_unified": use_unified,
+                        "visual_hits": len(results["visual"]),
+                        "visual_method": results["visual"][0]["method"] if results["visual"] else None,
+                        "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
+                    },
+                )
             except Exception as error:
                 st.session_state.model_search = None
+                logger.exception(
+                    "图片检索失败",
+                    extra={
+                        "query_mode": query_mode,
+                        "file_name": getattr(uploaded_file, "name", None),
+                        "top_k": top_k,
+                        "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
+                    },
+                )
                 st.error(f"图片模型检索失败：{error}", icon=":material/error:")
 
     # 从会话状态渲染：切换查询方式时不展示上一种方式留下的结果。
