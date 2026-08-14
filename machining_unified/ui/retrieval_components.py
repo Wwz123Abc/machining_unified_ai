@@ -23,9 +23,12 @@ from machining_unified.dto import (
 from machining_unified.knowledge.engineering import expand_part_relations
 
 
-# 结果卡片排成两列。半宽卡片里 260px 预览显得过高，网格中单独用更矮的高度。
+# 结果卡片排成两列。
+# 预览高度不能一味压小：半宽卡片约 520px 宽，高度取 190 时宽高比达 2.75:1，
+# 而机械零件多为方正外形，按高度约束缩放后左右必然大片留白。
+# 取 300 让画布接近 1.7:1，模型随之整体变大、空白显著减少。
 RESULT_COLUMNS = 2
-GRID_PREVIEW_HEIGHT = 190
+GRID_PREVIEW_HEIGHT = 300
 
 
 def _grid(items: Sequence[Any], columns: int = RESULT_COLUMNS):

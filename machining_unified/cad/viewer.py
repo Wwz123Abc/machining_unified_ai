@@ -110,41 +110,40 @@ export default function(component) {
   // 但也不能简单套包围球：卡片画布是宽扁形（约 522×190），按球半径取短边会把
   // 模型塞进一个 190px 的圆里，左右大片留白。改为分别约束水平与垂直方向。
   //
-  // 水平半宽在自动旋转下是不变量：绕 Y 轴转 yaw 时，投影横坐标的最大绝对值
-  // 恒等于顶点在 XZ 平面内的最大半径。
-  // 垂直半高只随 pitch 变化，对每个顶点取整圈 yaw 的上确界后再取最大值，
-  // 即 |y|·|cos p| + r_xz·|sin p|，可在 pitch 改变时以 O(n) 重算。
+  // 做法是在当前 pitch 下真实扫一圈 yaw，取投影包围盒的实际最大值。
+  // 曾用过逐顶点解析上界（|y|·|cos p| + r_xz·|sin p|），它假设所有顶点同时
+  // 达到各自最坏的 yaw，实测偏松约四成，模型因此被画得明显偏小。
+  // 采样一圈的开销只在初始化和 pitch 改变时发生，不进入每帧路径。
+  const FIT_SAMPLES = 36;
   let fitHalfWidth = 1e-6;
-  const radialXZ = [];
-  const absY = [];
-  for (const triangle of data.triangles) {
-    for (let i = 0; i < 9; i += 3) {
-      const r = Math.hypot(triangle[i], triangle[i + 2]);
-      radialXZ.push(r);
-      absY.push(Math.abs(triangle[i + 1]));
-      if (r > fitHalfWidth) fitHalfWidth = r;
-    }
-  }
-
   let fitHalfHeight = 1e-6;
-  function refreshVerticalFit() {
-    const cp = Math.abs(Math.cos(pitch));
-    const sp = Math.abs(Math.sin(pitch));
-    let half = 1e-6;
-    for (let i = 0; i < absY.length; i++) {
-      const extent = absY[i] * cp + radialXZ[i] * sp;
-      if (extent > half) half = extent;
+  function refreshFit() {
+    const cp = Math.cos(pitch), sp = Math.sin(pitch);
+    let halfW = 1e-6, halfH = 1e-6;
+    for (let step = 0; step < FIT_SAMPLES; step++) {
+      const angle = (step / FIT_SAMPLES) * Math.PI * 2;
+      const ca = Math.cos(angle), sa = Math.sin(angle);
+      for (const triangle of data.triangles) {
+        for (let i = 0; i < 9; i += 3) {
+          const x = triangle[i], y = triangle[i + 1], z = triangle[i + 2];
+          const projectedX = Math.abs(x * ca - z * sa);
+          const projectedY = Math.abs(y * cp - (x * sa + z * ca) * sp);
+          if (projectedX > halfW) halfW = projectedX;
+          if (projectedY > halfH) halfH = projectedY;
+        }
+      }
     }
-    fitHalfHeight = half;
+    fitHalfWidth = halfW;
+    fitHalfHeight = halfH;
   }
   let yaw = 0.65;
   let pitch = -0.45;
   let zoom = 1;
   let dragging = false;
   let previous = null;
-  // 必须在 pitch 声明之后调用：refreshVerticalFit 读取 pitch，
+  // 必须在 pitch 声明之后调用：refreshFit 读取 pitch，
   // 提前调用会命中 let 的暂时性死区并抛 ReferenceError。
-  refreshVerticalFit();
+  refreshFit();
 
   function rotate(x, y, z) {
     const cy = Math.cos(yaw), sy = Math.sin(yaw);
@@ -179,7 +178,7 @@ export default function(component) {
       return { points, depth: (points[0][2] + points[1][2] + points[2][2]) / 3, shade };
     });
     // 水平、垂直分别取能容下整圈旋转的尺度，再取较小者：既填满卡片，又不会在任何角度被裁。
-    const modelScale = zoom * 0.92 * Math.min(width / (2 * fitHalfWidth), height / (2 * fitHalfHeight));
+    const modelScale = zoom * 0.96 * Math.min(width / (2 * fitHalfWidth), height / (2 * fitHalfHeight));
     projected.sort((left, right) => left.depth - right.depth);
     for (const triangle of projected) {
       context.beginPath();
@@ -248,11 +247,15 @@ export default function(component) {
   const pointerMove = (event) => {
     if (!dragging || !previous) return;
     yaw += (event.clientX - previous.clientX) * 0.012;
-    const nextPitch = Math.max(-1.45, Math.min(1.45, pitch + (event.clientY - previous.clientY) * 0.012));
-    if (nextPitch !== pitch) { pitch = nextPitch; refreshVerticalFit(); }
+    // 拖动过程中不重算拟合：一次扫描要遍历三十六个角度，放进 mousemove 会明显卡顿。
+    // 沿用上一次的尺度即可，松手后再校正。
+    pitch = Math.max(-1.45, Math.min(1.45, pitch + (event.clientY - previous.clientY) * 0.012));
     previous = event; draw();
   };
-  const pointerUp = () => { dragging = false; previous = null; };
+  const pointerUp = () => {
+    if (dragging) { refreshFit(); draw(); }
+    dragging = false; previous = null;
+  };
   const wheel = (event) => {
     // 鼠标滚轮围绕模型中心缩放；限制倍率以防模型缩得过小或放得过大。
     event.preventDefault();
