@@ -12,7 +12,12 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from machining_unified.cad.extraction import extract_step_features, textify_cad_features  # noqa: E402
+from machining_unified.cad.extraction import (  # noqa: E402
+    describe_step_format,
+    extract_step_features,
+    looks_like_part21_step,
+    textify_cad_features,
+)
 from machining_unified.config.logging_setup import configure_logging  # noqa: E402
 from machining_unified.config.paths import (  # noqa: E402
     CAD_CATALOG_PATH,
@@ -80,11 +85,29 @@ def build_catalog(sample_dir: Path = SAMPLE_DIR) -> tuple[list[dict[str, Any]], 
     其余文件不会进入向量库，但会被记录在重复文件清单及主记录的 duplicate_sources 中。
     """
     candidates: list[dict[str, Any]] = []
+    skipped: list[str] = []
     for step_path in sorted(path for path in sample_dir.rglob("*") if path.suffix.lower() in STEP_SUFFIXES):
+        # 扩展名是 .step 不代表内容就是 STEP：二进制 CAD 文件被改名的情况很常见。
+        # 放进来只会得到一条低置信度的文本摘要记录，污染检索结果，因此直接跳过。
+        with step_path.open("rb") as handle:
+            head = handle.read(512)
+        if not looks_like_part21_step(head):
+            skipped.append(relative_path(step_path))
+            logger.warning(
+                "跳过非 ISO-10303-21 文件",
+                extra={"source_file": relative_path(step_path), "detail": describe_step_format(head)},
+            )
+            continue
         candidate = source_metadata(step_path, sample_dir)
         candidate["path"] = step_path
         candidate["content_md5"] = file_md5(step_path)
         candidates.append(candidate)
+
+    if skipped:
+        logger.warning(
+            "本次扫描跳过了非 STEP 内容的文件",
+            extra={"skipped_count": len(skipped), "skipped_files": skipped},
+        )
 
     by_md5: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for candidate in candidates:

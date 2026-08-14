@@ -12,7 +12,11 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from machining_unified.cad.extraction import extract_step_features
+from machining_unified.cad.extraction import (
+    describe_step_format,
+    extract_step_features,
+    looks_like_part21_step,
+)
 from machining_unified.cad.retrieval import retrieve_similar_cad
 from machining_unified.cad.visual import retrieve_by_image
 from machining_unified.dto import (
@@ -35,11 +39,22 @@ from machining_unified.retrieval.multimodal import (
 
 
 def save_step_upload(uploaded_file: Any) -> Path:
-    """把上传 STEP 保存到并发安全的临时文件并验证扩展名。"""
+    """把上传 STEP 保存到并发安全的临时文件，并校验扩展名与文件内容。
+
+    只看扩展名不够：实践中常见把二进制 CAD 文件改成 .step 后缀的情况，
+    此时底层解析器只会返回 IFSelect_RetFail 这种无从下手的状态码。
+    在入口处按 ISO-10303-21 标记判定，才能给出用户可据以行动的提示。
+    """
 
     suffix = Path(uploaded_file.name).suffix.lower()
     if suffix not in {".step", ".stp"}:
         raise ValueError("仅支持 .step 或 .stp 文件")
+    payload = uploaded_file.getvalue()
+    if not looks_like_part21_step(payload):
+        raise ValueError(
+            f"该文件不是 ISO-10303-21 文本 STEP（{describe_step_format(payload)}）。"
+            "扩展名虽为 .step，但内容是其他格式，请用 CAD 软件重新导出为 STEP AP203/AP214/AP242。"
+        )
     source_stem = re.sub(r"[^0-9A-Za-z_-]+", "_", Path(uploaded_file.name).stem)[:48] or "step_query"
     handle, name = tempfile.mkstemp(prefix=f"{source_stem}_", suffix=suffix)
     os.close(handle)

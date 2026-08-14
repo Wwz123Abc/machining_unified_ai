@@ -92,13 +92,26 @@ if workspace == "模型检索":
                     st.write(":material/view_in_ar: 提取 OCP/XCAF 几何事实")
                     results = search_by_step(query_path, top_k=top_k, use_unified=use_unified)
                     # 临时文件稍后删除，这里先把网格取出来随结果一起保存。
-                    query_mesh = step_mesh_payload(str(query_path.resolve()))
+                    # 三角化失败不能连累检索：几何提取本身有文本摘要降级路径，
+                    # 检索结果此时已经产生，仅仅是画不出预览而已。
+                    try:
+                        query_mesh = step_mesh_payload(str(query_path.resolve()))
+                    except (OSError, ValueError, RuntimeError) as mesh_error:
+                        query_mesh = None
+                        mesh_warning = f"查询模型无法三维预览：{mesh_error}"
+                        logger.warning(
+                            "查询模型网格提取失败，检索结果不受影响",
+                            extra={"file_name": getattr(uploaded_file, "name", None)},
+                        )
+                    else:
+                        mesh_warning = None
                     status.update(label="STEP 模型检索完成", state="complete", expanded=False)
                 st.session_state.model_search = {
                     "mode": query_mode,
                     "results": results,
                     "query_mesh": query_mesh,
                     "explanation": generate_rag_explanation(results.query, results.semantic),
+                    "mesh_warning": mesh_warning,
                 }
                 logger.info(
                     "STEP 检索完成",
@@ -110,7 +123,8 @@ if workspace == "模型检索":
                         "geometry_hits": len(results.geometry),
                         "semantic_hits": len(results.semantic),
                         "unified_hits": len(results.unified),
-                        "triangle_count": query_mesh["triangle_count"],
+                        "triangle_count": query_mesh["triangle_count"] if query_mesh else None,
+                        "geometry_confidence": results.query["features"].get("geometry_confidence"),
                         "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
                     },
                 )
@@ -207,6 +221,8 @@ if workspace == "模型检索":
     if search_state and search_state["mode"] == query_mode:
         results = search_state["results"]
         if query_mode == "STEP 模型":
+            if search_state.get("mesh_warning"):
+                st.warning(search_state["mesh_warning"], icon=":material/3d_rotation:")
             # 查询模型作为几何结果网格的首个卡片，与候选同行同尺寸，便于直接比对形状。
             retrieval_components.render_geometry_results(
                 results.geometry, query_mesh=search_state["query_mesh"]

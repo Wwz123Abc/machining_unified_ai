@@ -27,6 +27,31 @@ except ImportError:  # pragma: no cover - 仅在未安装 cadquery-ocp 的环境
 # 本层绝不虚构缺失的工程图元数据。
 
 
+# ISO 10303-21（STEP 物理文件）要求文件以 ISO-10303-21 标记开头。
+# 实践中常见「二进制 CAD 文件被改成 .step 后缀」，此时 OCP 只会给出
+# IFSelect_RetFail 这类无从下手的状态码，必须在更早的位置识别出来。
+_PART21_MAGIC = b"ISO-10303-21"
+_PART21_PROBE_BYTES = 512
+
+
+def looks_like_part21_step(data: bytes) -> bool:
+    """判断字节内容是否为 ISO-10303-21 文本 STEP。
+
+    只看开头一小段：合法文件的标记必定在首行附近，
+    而错误格式往往整体是二进制，读全文没有意义。
+    """
+
+    return _PART21_MAGIC in data[:_PART21_PROBE_BYTES]
+
+
+def describe_step_format(data: bytes) -> str:
+    """为非 Part 21 内容生成可读的诊断信息，供界面直接展示给用户。"""
+
+    head = data[:16]
+    printable = "".join(chr(b) if 32 <= b < 127 else "." for b in head)
+    return f"文件头为 {printable!r}，不含 ISO-10303-21 标记"
+
+
 def _count_subshapes(shape: Any, shape_type: Any) -> int:
     from OCP.TopExp import TopExp_Explorer
 
