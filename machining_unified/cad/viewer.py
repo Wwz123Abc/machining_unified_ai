@@ -29,7 +29,10 @@ from OCP.TopLoc import TopLoc_Location
 from OCP.TopoDS import TopoDS
 
 
-MAX_TRIANGLES = 3_000
+# 每帧都要对全部三角面做旋转、投影和深度排序，因此这是自动旋转流畅度的主要变量。
+# 190~260px 的预览框分辨不出三千个面与一千八百个面的差别，取后者换取帧率。
+# 需要更高保真时提高此值，但要同时评估一屏多画布下的总开销。
+MAX_TRIANGLES = 1_800
 # 预览高度。结果页会同时出现多个画布，过高会把证据信息挤出首屏；
 # 缩小后仍足以辨认零件形态，也降低了自动旋转时的每帧绘制量。
 PREVIEW_HEIGHT = 260
@@ -102,11 +105,46 @@ export default function(component) {
   // 组件的 parentElement 是 ShadowRoot（没有 getBoundingClientRect），
   // 其 .host 才是 Streamlit 按 height 参数给定确定高度的宿主元素。
   const hostElement = parentElement.host || canvas.parentElement || canvas;
+
+  // 缩放不逐帧重算——那会让模型边转边被反复缩放，呈现呼吸式抖动。
+  // 但也不能简单套包围球：卡片画布是宽扁形（约 522×190），按球半径取短边会把
+  // 模型塞进一个 190px 的圆里，左右大片留白。改为分别约束水平与垂直方向。
+  //
+  // 水平半宽在自动旋转下是不变量：绕 Y 轴转 yaw 时，投影横坐标的最大绝对值
+  // 恒等于顶点在 XZ 平面内的最大半径。
+  // 垂直半高只随 pitch 变化，对每个顶点取整圈 yaw 的上确界后再取最大值，
+  // 即 |y|·|cos p| + r_xz·|sin p|，可在 pitch 改变时以 O(n) 重算。
+  let fitHalfWidth = 1e-6;
+  const radialXZ = [];
+  const absY = [];
+  for (const triangle of data.triangles) {
+    for (let i = 0; i < 9; i += 3) {
+      const r = Math.hypot(triangle[i], triangle[i + 2]);
+      radialXZ.push(r);
+      absY.push(Math.abs(triangle[i + 1]));
+      if (r > fitHalfWidth) fitHalfWidth = r;
+    }
+  }
+
+  let fitHalfHeight = 1e-6;
+  function refreshVerticalFit() {
+    const cp = Math.abs(Math.cos(pitch));
+    const sp = Math.abs(Math.sin(pitch));
+    let half = 1e-6;
+    for (let i = 0; i < absY.length; i++) {
+      const extent = absY[i] * cp + radialXZ[i] * sp;
+      if (extent > half) half = extent;
+    }
+    fitHalfHeight = half;
+  }
   let yaw = 0.65;
   let pitch = -0.45;
   let zoom = 1;
   let dragging = false;
   let previous = null;
+  // 必须在 pitch 声明之后调用：refreshVerticalFit 读取 pitch，
+  // 提前调用会命中 let 的暂时性死区并抛 ReferenceError。
+  refreshVerticalFit();
 
   function rotate(x, y, z) {
     const cy = Math.cos(yaw), sy = Math.sin(yaw);
@@ -140,30 +178,14 @@ export default function(component) {
       const shade = Math.max(0.22, Math.min(0.92, 0.57 + nz * 0.9));
       return { points, depth: (points[0][2] + points[1][2] + points[2][2]) / 3, shade };
     });
-    // 每次旋转后按当前投影外包范围重新计算缩放和中心。
-    // 因而不论模型是细长轴、扁平板还是大型装配体，均可完整落在窗口内。
-    // 用显式循环求包围范围：自动旋转会持续重绘，而 Math.min(...arr) 对上万个
-    // 元素展开参数在每帧都做一次，开销明显且有触发调用栈上限的风险。
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    for (const triangle of projected) {
-      for (const point of triangle.points) {
-        if (point[0] < minX) minX = point[0];
-        if (point[0] > maxX) maxX = point[0];
-        if (point[1] < minY) minY = point[1];
-        if (point[1] > maxY) maxY = point[1];
-      }
-    }
-    const spanX = Math.max(maxX - minX, 1e-6);
-    const spanY = Math.max(maxY - minY, 1e-6);
-    const modelScale = zoom * 0.88 * Math.min(width / spanX, height / spanY);
-    const centerX = (minX + maxX) / 2;
-    const centerY = (minY + maxY) / 2;
+    // 水平、垂直分别取能容下整圈旋转的尺度，再取较小者：既填满卡片，又不会在任何角度被裁。
+    const modelScale = zoom * 0.92 * Math.min(width / (2 * fitHalfWidth), height / (2 * fitHalfHeight));
     projected.sort((left, right) => left.depth - right.depth);
     for (const triangle of projected) {
       context.beginPath();
       triangle.points.forEach((point, index) => {
-        const x = width / 2 + (point[0] - centerX) * modelScale;
-        const y = height / 2 - (point[1] - centerY) * modelScale;
+        const x = width / 2 + point[0] * modelScale;
+        const y = height / 2 - point[1] * modelScale;
         if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
       });
       context.closePath();
@@ -180,7 +202,10 @@ export default function(component) {
   // 自动旋转。一次检索可能同时渲染近十个画布，每个最多三千个三角面，
   // 因此有两道限流：只有滚动进视口的画布才动，且重绘节流到约 25fps。
   // 用户一旦拖动就永久接管，不再自动转，避免手动对准的角度被转走。
-  const FRAME_INTERVAL = 40;
+  // 跟随显示器刷新率（约 60fps）。此前节流到 25fps 是为了压住多画布的开销，
+  // 但改用固定缩放后每帧省掉了一次全顶点极值遍历，且视口外的画布本就不绘制，
+  // 因此可以放开。仍保留一个下限间隔，避免高刷新率屏幕上无谓地烧 CPU。
+  const FRAME_INTERVAL = 16;
   const YAW_PER_SECOND = 0.35;
   let autoRotate = true;
   let visible = false;
@@ -223,7 +248,8 @@ export default function(component) {
   const pointerMove = (event) => {
     if (!dragging || !previous) return;
     yaw += (event.clientX - previous.clientX) * 0.012;
-    pitch = Math.max(-1.45, Math.min(1.45, pitch + (event.clientY - previous.clientY) * 0.012));
+    const nextPitch = Math.max(-1.45, Math.min(1.45, pitch + (event.clientY - previous.clientY) * 0.012));
+    if (nextPitch !== pitch) { pitch = nextPitch; refreshVerticalFit(); }
     previous = event; draw();
   };
   const pointerUp = () => { dragging = false; previous = null; };

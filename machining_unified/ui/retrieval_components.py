@@ -10,7 +10,7 @@ from typing import Any, Sequence
 
 import streamlit as st
 
-from machining_unified.cad.viewer import render_step_file, render_step_model
+from machining_unified.cad.viewer import render_step_file, render_step_model, render_step_payload
 from machining_unified.config.paths import PROJECT_ROOT
 from machining_unified.dto import (
     EnterpriseEvidence,
@@ -63,25 +63,42 @@ def render_graph_relations(part_id: str) -> None:
                 st.write(f"• {item['relation']}：{item['node']}")
 
 
-def render_geometry_results(items: Sequence[GeometryHit]) -> None:
-    """展示可解释的结构化几何相似结果。"""
+def render_geometry_results(
+    items: Sequence[GeometryHit],
+    query_mesh: dict[str, Any] | None = None,
+) -> None:
+    """展示可解释的结构化几何相似结果。
+
+    传入 ``query_mesh`` 时，查询模型作为首个卡片与候选同行、同尺寸展示——
+    比对形状时视线不必在整宽预览与半宽候选之间来回换算大小。
+    """
 
     st.markdown("#### 结构化几何相似结果")
     if not items:
         st.warning("CAD 目录中没有可比较的模型。", icon=":material/search_off:")
+    # None 占位代表查询模型卡片，其余为候选命中；两者同走一个网格才能保证尺寸一致。
+    cards: list[GeometryHit | None] = ([None] if query_mesh is not None else []) + list(items)
+    if not cards:
         return
-    for cell, hit, index in _grid(items):
+    rank = 0
+    for cell, card, _ in _grid(cards):
         with cell, st.container(border=True):
-            st.write(f"**{index}. {hit.part_id}** · 几何相似度 **{hit.score:.3f}**")
-            st.caption(f"资料组：{hit.model_group_id} ｜来源：`{hit.source_file or hit.file_name}`")
-            if hit.source_file:
+            if card is None:
+                st.write("**查询模型** · 本次检索的输入")
+                st.caption("下方候选均与它比较；相似度是几何加权分，不是向量相似度。")
+                render_step_payload(query_mesh, key="query-step-model", height=GRID_PREVIEW_HEIGHT)
+                continue
+            rank += 1
+            st.write(f"**{rank}. {card.part_id}** · 几何相似度 **{card.score:.3f}**")
+            st.caption(f"资料组：{card.model_group_id} ｜来源：`{card.source_file or card.file_name}`")
+            if card.source_file:
                 render_step_file(
-                    (PROJECT_ROOT / hit.source_file).resolve(),
-                    key=f"geometry-result-{index}-{hit.part_id}",
+                    (PROJECT_ROOT / card.source_file).resolve(),
+                    key=f"geometry-result-{rank}-{card.part_id}",
                     height=GRID_PREVIEW_HEIGHT,
                 )
-            st.write("相似依据：" + ("；".join(hit.reasons) or "可比较字段有限"))
-            render_graph_relations(hit.part_id)
+            st.write("相似依据：" + ("；".join(card.reasons) or "可比较字段有限"))
+            render_graph_relations(card.part_id)
 
 
 def render_semantic_results(

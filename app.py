@@ -9,7 +9,7 @@ import streamlit as st
 from PIL import Image
 
 from machining_unified.cad.retrieval import load_cad_catalog
-from machining_unified.cad.viewer import render_step_payload, step_mesh_payload
+from machining_unified.cad.viewer import step_mesh_payload
 from machining_unified.config.logging_setup import configure_logging
 from machining_unified.knowledge.enterprise import answer_assistant_question, answer_enterprise_question
 from machining_unified.retrieval.cad_rag import generate_rag_explanation
@@ -207,9 +207,10 @@ if workspace == "模型检索":
     if search_state and search_state["mode"] == query_mode:
         results = search_state["results"]
         if query_mode == "STEP 模型":
-            st.markdown("#### 查询模型 3D 预览")
-            render_step_payload(search_state["query_mesh"], key="query-step-model")
-            retrieval_components.render_geometry_results(results.geometry)
+            # 查询模型作为几何结果网格的首个卡片，与候选同行同尺寸，便于直接比对形状。
+            retrieval_components.render_geometry_results(
+                results.geometry, query_mesh=search_state["query_mesh"]
+            )
             retrieval_components.render_semantic_results(results.semantic, catalog_by_id, "step-semantic")
             if results.unified:
                 retrieval_components.render_unified_results(results.unified, catalog_by_id, "step-unified")

@@ -137,7 +137,9 @@ def test_step_upload_flow() -> None:
     check("重跑后结果仍在会话状态中", at.session_state["model_search"] is not None)
     check("重跑后网格仍可用", at.session_state["model_search"]["query_mesh"]["triangle_count"] > 0)
     rendered = " ".join(element.value for element in at.markdown)
-    check("重跑后仍渲染出查询模型预览标题", "查询模型 3D 预览" in rendered)
+    # 查询模型现在是几何结果网格里的首个卡片，与候选同尺寸并排。
+    check("重跑后仍渲染出查询模型卡片", "查询模型" in rendered)
+    check("查询模型与几何候选同处一个结果区", "结构化几何相似结果" in rendered)
 
 
 def test_image_upload_flow() -> None:
