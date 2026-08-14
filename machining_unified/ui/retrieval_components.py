@@ -29,6 +29,20 @@ from machining_unified.knowledge.engineering import expand_part_relations
 # 取 300 让画布接近 1.7:1，模型随之整体变大、空白显著减少。
 RESULT_COLUMNS = 2
 GRID_PREVIEW_HEIGHT = 300
+# 画布在卡片内收窄居中。模型尺寸由高度约束决定，收窄不改变它，
+# 只是把原本落在画布内部的左右留白挪到卡片边距，观感更紧凑。
+PREVIEW_WIDTH_RATIO = 0.7
+
+
+def _preview_slot(width_ratio: float = PREVIEW_WIDTH_RATIO):
+    """返回卡片内居中收窄的预览容器。
+
+    gap=None 是必要的：默认的列间距会额外吃掉宽度，
+    使实际画布比设定比例更窄。
+    """
+
+    side = max((1 - width_ratio) / 2, 1e-6)
+    return st.columns([side, width_ratio, side], gap=None)[1]
 
 
 def _grid(items: Sequence[Any], columns: int = RESULT_COLUMNS):
@@ -89,17 +103,19 @@ def render_geometry_results(
             if card is None:
                 st.write("**查询模型** · 本次检索的输入")
                 st.caption("下方候选均与它比较；相似度是几何加权分，不是向量相似度。")
-                render_step_payload(query_mesh, key="query-step-model", height=GRID_PREVIEW_HEIGHT)
+                with _preview_slot():
+                    render_step_payload(query_mesh, key="query-step-model", height=GRID_PREVIEW_HEIGHT)
                 continue
             rank += 1
             st.write(f"**{rank}. {card.part_id}** · 几何相似度 **{card.score:.3f}**")
             st.caption(f"资料组：{card.model_group_id} ｜来源：`{card.source_file or card.file_name}`")
             if card.source_file:
-                render_step_file(
-                    (PROJECT_ROOT / card.source_file).resolve(),
-                    key=f"geometry-result-{rank}-{card.part_id}",
-                    height=GRID_PREVIEW_HEIGHT,
-                )
+                with _preview_slot():
+                    render_step_file(
+                        (PROJECT_ROOT / card.source_file).resolve(),
+                        key=f"geometry-result-{rank}-{card.part_id}",
+                        height=GRID_PREVIEW_HEIGHT,
+                    )
             st.write("相似依据：" + ("；".join(card.reasons) or "可比较字段有限"))
             render_graph_relations(card.part_id)
 
@@ -121,9 +137,10 @@ def render_semantic_results(
             st.caption(f"来源：`{hit.source_file}` ｜方式：BGE 中文语义向量")
             record = catalog_by_id.get(hit.part_id)
             if record:
-                render_step_model(
-                    record, key=f"{key_prefix}-{index}-{hit.part_id}", height=GRID_PREVIEW_HEIGHT
-                )
+                with _preview_slot():
+                    render_step_model(
+                        record, key=f"{key_prefix}-{index}-{hit.part_id}", height=GRID_PREVIEW_HEIGHT
+                    )
 
 
 def render_unified_results(
@@ -147,9 +164,10 @@ def render_unified_results(
             st.write(f"**{index}. {hit.part_id}** · 多模态相似度 **{hit.score:.3f}**")
             st.caption(f"来源：`{hit.source_file}` ｜方式：{hit.embedding_method}")
             if record:
-                render_step_model(
-                    record, key=f"{key_prefix}-{index}-{hit.part_id}", height=GRID_PREVIEW_HEIGHT
-                )
+                with _preview_slot():
+                    render_step_model(
+                        record, key=f"{key_prefix}-{index}-{hit.part_id}", height=GRID_PREVIEW_HEIGHT
+                    )
 
 
 def render_image_results(items: Sequence[VisualHit]) -> None:
@@ -163,7 +181,8 @@ def render_image_results(items: Sequence[VisualHit]) -> None:
         with cell, st.container(border=True):
             st.write(f"**{index}. {hit.part_id}** · 视觉相似度 **{hit.score:.3f}**")
             # 展示的正是参与比对的那张渲染图，而不是另行生成的示意图。
-            st.image(hit.preview, width="stretch")
+            with _preview_slot():
+                st.image(hit.preview, width="stretch")
             st.caption(f"方式：{hit.method} ｜来源：`{hit.source_file}`")
 
 
