@@ -10,7 +10,7 @@
 #   - 升级依赖时先改本文件，安装后重新生成 lock，并至少执行：
 #       python -m compileall -q app.py machining_unified scripts
 #       python scripts/check_databases.py
-#       在页面上完成 STEP / 文字 / 图片三种查询与一次企业资料问答。
+#       在页面上完成 STEP / 文字 / 图片三种查询。
 #
 # 重新生成 lock：
 #   .\.venv\Scripts\python.exe -m pip freeze --exclude-editable > requirements.lock.txt
@@ -45,8 +45,7 @@ sentence-transformers==5.7.0
 # 词法检索
 rank-bm25==0.2.2
 
-# 文档与资料解析
-pypdf==6.15.0
+# BOM Excel 解析（scripts/import_assembly_package.py）
 openpyxl==3.1.5
 
 # 基础库

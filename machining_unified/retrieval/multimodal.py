@@ -1,4 +1,16 @@
-"""第一期统一多模态嵌入：文本、图片与 STEP 多视角投影共用 CLIP 空间。"""
+"""图片检索的内部加速层：STEP 多视角投影落在 CLIP 图像空间的预计算索引。
+
+本模块不面向 UI。它只服务 ``cad/visual.retrieve_by_image`` 的粗召回步骤：
+真实精排（渲染候选图 + 与查询图片重新比对）仍在 ``cad/visual.py`` 完成，
+这里只负责用一次 ANN 查询把 508 个候选缩小到几十个，省掉对全库渲染+编码。
+
+**索引内容是纯几何向量，不再混合任何文本嵌入。** 早期版本按
+``text_weight * 文本向量 + geometry_weight * 几何向量`` 合成索引向量，
+目的是让文字查询也能直接命中这个空间；但 CLIP（clip-ViT-B-32）是英文
+图文模型，中文文本经它编码后基本是噪声（实测三条中文描述族级命中 0/9），
+混入图片检索的粗召回反而是污染信号，而不是补充信号。现在索引只由
+STEP 的真实多视角渲染图编码而成，查询侧也只用图片，两者同构。
+"""
 
 from __future__ import annotations
 
@@ -15,12 +27,15 @@ import numpy as np
 from machining_unified.cad.extraction import textify_cad_features
 from machining_unified.cad.visual import get_clip_model, model_previews
 from machining_unified.config.paths import MULTIMODAL_MANIFEST_PATH, MULTIMODAL_VECTOR_DIR
-from machining_unified.config.retrieval_params import get_retrieval_params
 
 
 UNIFIED_VECTOR_DIR = MULTIMODAL_VECTOR_DIR
 UNIFIED_MANIFEST = MULTIMODAL_MANIFEST_PATH
 COLLECTION_NAME = "unified_cad_models"
+# 粗召回候选数。远大于任何 UI 上会展示的 top_k，
+# 因为这一步只负责把渲染+精排的候选集从全库（508+）缩小到可承受的规模，
+# 不是最终排序——真正的名次由 cad/visual.retrieve_by_image 的精排决定。
+COARSE_RECALL_LIMIT = 50
 
 
 def normalize(vector: np.ndarray) -> np.ndarray:
@@ -29,48 +44,31 @@ def normalize(vector: np.ndarray) -> np.ndarray:
 
 
 def factual_cad_text(record: dict[str, Any]) -> str:
-    """只使用 STEP 提取的几何事实，不将模板化功能推断写入统一空间。"""
+    """只使用 STEP 提取的几何事实，供 Chroma 文档字段存人可读的追溯文本。
+
+    这段文本不参与嵌入计算（索引向量是纯几何渲染），只是让人在检索到某条
+    记录时能看懂它是什么，不必反查 CAD 目录。
+    """
     return textify_cad_features(record)
 
 
-def _geometry_vector(record: dict[str, Any]) -> tuple[np.ndarray, int]:
-    """把 STEP 的多个真实网格视角投影到 CLIP 图像空间并取均值。"""
+def build_unified_embedding(record: dict[str, Any]) -> tuple[np.ndarray, dict[str, Any]]:
+    """把 STEP 的多个真实网格视角投影到 CLIP 图像空间并取均值，作为该零件的索引向量。
+
+    只用几何渲染、不掺文本：查询侧（`coarse_visual_candidates`）同样只编码图片，
+    两侧同构才能让粗召回的相似度有意义。
+    """
     views = model_previews(record)
     view_vectors = np.asarray(
         get_clip_model().encode(views, normalize_embeddings=True, batch_size=16), dtype=np.float32
     )
-    return normalize(view_vectors.mean(axis=0)), len(views)
-
-
-def _record_modal_vectors(record: dict[str, Any]) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
-    """分别生成文本向量和 STEP 几何多视角向量，二者均位于 CLIP 共享空间。"""
-    model = get_clip_model()
-    text = factual_cad_text(record)
-    text_vector = np.asarray(model.encode([text], normalize_embeddings=True)[0], dtype=np.float32)
-    geometry_vector, view_count = _geometry_vector(record)
-    weights = get_retrieval_params().unified_embedding
-    # 权重写进审计信息：索引是用哪一组权重合成的必须可回溯，
-    # 否则事后调过配置就无法判断库内向量与当前配置是否一致。
+    vector = normalize(view_vectors.mean(axis=0))
     audit = {
-        "text_embedding_dim": int(text_vector.size),
-        "geometry_embedding_dim": int(geometry_vector.size),
-        "render_view_count": view_count,
-        "text_weight": weights.text,
-        "geometry_weight": weights.geometry,
-        "method": "CLIP shared image-text space + eight real STEP mesh views",
+        "geometry_embedding_dim": int(vector.size),
+        "render_view_count": len(views),
+        "method": "CLIP image space, eight real STEP mesh views (geometry-only)",
     }
-    return text_vector, geometry_vector, audit
-
-
-def build_unified_embedding(record: dict[str, Any]) -> tuple[np.ndarray, dict[str, Any]]:
-    """为单个 STEP 生成统一向量及可审计的模态构成信息。
-
-    当前阶段将 STEP 通过八个真实网格渲染视角送入 CLIP 图像编码器；
-    它是共享空间原型，不是已经用企业数据微调过的原生点云编码器。
-    """
-    text_vector, geometry_vector, audit = _record_modal_vectors(record)
-    unified_vector = normalize(audit["text_weight"] * text_vector + audit["geometry_weight"] * geometry_vector)
-    return unified_vector, audit
+    return vector, audit
 
 
 def build_unified_index(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -113,11 +111,12 @@ def build_unified_index(records: list[dict[str, Any]]) -> dict[str, Any]:
         shutil.rmtree(temporary_dir, ignore_errors=True)
         raise
     manifest = {
-        "status": "prototype",
+        "status": "internal-accelerator",
         "collection": COLLECTION_NAME,
         "model": "sentence-transformers/clip-ViT-B-32",
         "searchable_model_count": len(records),
         "embedding_dimension": len(embeddings[0]) if embeddings else 0,
+        "purpose": "cad/visual.retrieve_by_image 的粗召回加速层，不面向 UI 展示。",
         "limitation": "STEP uses real multi-view mesh renders. Native 3D encoder domain fine-tuning requires more enterprise triplets.",
         "records": audit_records,
     }
@@ -127,7 +126,7 @@ def build_unified_index(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 @lru_cache(maxsize=1)
 def get_unified_collection():
-    """打开已构建的统一向量库，供后续文字、图片或 STEP 查询共同使用。"""
+    """打开已构建的统一向量库，供图片检索的粗召回步骤使用。"""
     if not UNIFIED_VECTOR_DIR.exists():
         raise FileNotFoundError("尚未建立统一多模态向量库，请运行 scripts/build_unified_index.py")
     client = chromadb.PersistentClient(path=str(UNIFIED_VECTOR_DIR))
@@ -149,25 +148,12 @@ def _query_vector(vector: np.ndarray, top_k: int) -> list[dict[str, Any]]:
     ]
 
 
-def retrieve_unified_by_text(question: str, top_k: int = 5) -> list[dict[str, Any]]:
-    """以文字直接检索 STEP 模型，无需先经过 BGE 或关键词分支。"""
-    vector = np.asarray(get_clip_model().encode([question], normalize_embeddings=True)[0], dtype=np.float32)
-    return _query_vector(vector, top_k)
+def coarse_visual_candidates(image: Any, limit: int = COARSE_RECALL_LIMIT) -> list[dict[str, Any]]:
+    """CLIP 粗召回：用查询图片直接匹配统一库里的纯几何多视角向量。
 
-
-def retrieve_unified_by_image(image, top_k: int = 5) -> list[dict[str, Any]]:
-    """以图片直接检索 STEP 模型；图片与 STEP 多视角处于同一 CLIP 空间。"""
-    vector = np.asarray(get_clip_model().encode([image.convert("RGB")], normalize_embeddings=True)[0], dtype=np.float32)
-    return _query_vector(vector, top_k)
-
-
-def retrieve_unified_by_step(record: dict[str, Any], top_k: int = 5) -> list[dict[str, Any]]:
-    """以 STEP 几何多视角直接检索，不使用上传文件名或文本描述。
-
-    索引里存的是文本与几何按权重混合后的向量，这里刻意只用纯几何向量查询：
-    上传模型没有可信的企业文本描述，掺入自动生成的文本会引入伪证据。
-    代价是查询向量与索引向量不同构，因此该分支的分数只能用于排序，
-    不能与 BGE 语义分或几何加权分横向比较。
+    仅供 ``cad/visual.retrieve_by_image`` 内部调用，不是独立的检索分支：
+    这里的分数只用于圈定候选范围，不作为最终排序或展示给用户的证据——
+    真正的名次由精排阶段对候选重新渲染、重新比对后给出。
     """
-    geometry_vector, _ = _geometry_vector(record)
-    return _query_vector(geometry_vector, top_k)
+    vector = np.asarray(get_clip_model().encode([image.convert("RGB")], normalize_embeddings=True)[0], dtype=np.float32)
+    return _query_vector(vector, limit)

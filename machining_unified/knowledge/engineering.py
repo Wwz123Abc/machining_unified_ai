@@ -13,12 +13,14 @@ from chromadb.errors import ChromaError
 
 from machining_unified.cad.extraction import classify_part_family, geometry_semantics
 from machining_unified.cad.retrieval import load_cad_catalog
+from machining_unified.config.paths import CAD_CATALOG_PATH, KNOWLEDGE_GRAPH_CACHE_PATH
 from machining_unified.config.retrieval_params import get_retrieval_params
 from machining_unified.knowledge.manifests import (
     assemblies_using_part,
     assembly_manifest_for,
     load_assembly_manifests,
 )
+from machining_unified.knowledge.part_ids import extract_part_ids
 
 logger = logging.getLogger(__name__)
 
@@ -200,10 +202,53 @@ def build_knowledge_graph(records: list[dict[str, Any]] | None = None) -> dict[s
     return {"nodes": nodes, "edges": edges}
 
 
+def _read_knowledge_graph_cache(catalog_mtime_ns: int) -> dict[str, Any] | None:
+    """尝试从磁盘缓存读取知识图谱；缓存不存在、损坏或已过期时返回 None。
+
+    过期判据是 CAD 目录文件的 mtime——目录一变，缓存必须重新构建，
+    不需要人工清缓存或重启进程。
+    """
+    if not KNOWLEDGE_GRAPH_CACHE_PATH.is_file():
+        return None
+    try:
+        payload = json.loads(KNOWLEDGE_GRAPH_CACHE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning("知识图谱磁盘缓存不可读，将重新构建", exc_info=True)
+        return None
+    if not isinstance(payload, dict) or payload.get("catalog_mtime_ns") != catalog_mtime_ns:
+        return None
+    graph = payload.get("graph")
+    return graph if isinstance(graph, dict) else None
+
+
+def _write_knowledge_graph_cache(graph: dict[str, Any], catalog_mtime_ns: int) -> None:
+    """原子落盘：临时文件 + replace，与 ``scripts/build_vector_index.py`` 等脚本同一套写入模式。"""
+    try:
+        KNOWLEDGE_GRAPH_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temporary = KNOWLEDGE_GRAPH_CACHE_PATH.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps({"catalog_mtime_ns": catalog_mtime_ns, "graph": graph}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        temporary.replace(KNOWLEDGE_GRAPH_CACHE_PATH)
+    except OSError:
+        # 缓存写不进去不影响功能，只是这次进程内命中之后、下次冷启动还要重新付出构图代价。
+        logger.warning("知识图谱磁盘缓存写入失败，本次不缓存", exc_info=True)
+
+
 @lru_cache(maxsize=1)
-def _cached_knowledge_graph() -> tuple[str, ...]:
-    """把图谱序列化后缓存，避免每条检索结果都重新遍历目录构图。"""
-    graph = build_knowledge_graph()
+def _cached_knowledge_graph(catalog_mtime_ns: int) -> tuple[str, ...]:
+    """把图谱序列化后缓存，避免每条检索结果都重新遍历目录构图。
+
+    两级缓存：进程内 ``lru_cache`` 最快；跨进程/重启退化到磁盘缓存
+    （508 条目录的 O(n^2) 圆柱接口两两比较实测 55~90 秒，值得跨进程复用）；
+    两级都未命中才真正重新构图。``catalog_mtime_ns`` 是两级缓存共同的失效判据，
+    调用方必须每次都传入当前 mtime，不能省略——省略就退回"重启才刷新"的旧行为。
+    """
+    graph = _read_knowledge_graph_cache(catalog_mtime_ns)
+    if graph is None:
+        graph = build_knowledge_graph()
+        _write_knowledge_graph_cache(graph, catalog_mtime_ns)
     return (json.dumps(graph, ensure_ascii=False),)
 
 
@@ -213,7 +258,8 @@ def expand_part_relations(part_id: str) -> dict[str, list[dict[str, str]]]:
     导入的 BOM 与工程图边是事实；类别、功能和圆柱接口边只是几何规则推断出的候选。
     两者分开返回，界面不得把它们混为同一种证据。
     """
-    graph = json.loads(_cached_knowledge_graph()[0])
+    catalog_mtime_ns = CAD_CATALOG_PATH.stat().st_mtime_ns if CAD_CATALOG_PATH.is_file() else 0
+    graph = json.loads(_cached_knowledge_graph(catalog_mtime_ns)[0])
     labels = {node["id"]: node["label"] for node in graph["nodes"]}
     kinds = {node["id"]: node["kind"] for node in graph["nodes"]}
     # BOM 与装配节点来自真实导入资料；类别/功能/接口节点来自几何规则。
@@ -334,22 +380,118 @@ def hybrid_retrieve(query: str, top_k: int = 5, candidates: list[dict[str, Any]]
     return sorted(results, key=lambda item: item["score"], reverse=True)[:top_k]
 
 
+# 目录里的图号有两种形态：符合企业规范"字母数字-三段数字"（DTXT806-300-012
+# 风格，PART_ID_PATTERN 能解析、还能处理 BOM 三位前缀/版本字母后缀的归一化），
+# 以及供应商/外购件常见的自由格式（XC3-KJ-555、110021025401-J-CRB06-D65-NM 之类）。
+# 实测全库 508 条里有 147 条（29%）是后者——PART_ID_PATTERN 硬性要求第二段
+# 恰好三个字符，"KJ"只有两个字符就会被拒绝。纯用正则会让近三成零件永远进不了
+# 置顶通道，且这些恰恰是本次新导入拆解件里最需要精确定位的外购标准件。
+#
+# 因此改成"以目录为权威词典"：正则解析得出图号的记录走归一化匹配（第一分支）；
+# 正则解析不出图号的记录，退化为对零件自身名的大小写不敏感、词边界安全的
+# 精确子串匹配（第二分支）。子串匹配设最短长度门槛，排除 "A"/"B"/"C"/"D"/
+# "零件1"/"零件2"这类没有真实图号、只是占位标签的记录——它们是通用短词，
+# 无边界约束地做子串匹配几乎必然误命中任意包含同一字母/词组的查询，
+# 而且这些记录本来就该交给语义/BM25 去找，不属于"精确图号"这条通道要解决的问题。
+_MIN_FALLBACK_NAME_LENGTH = 6
+
+
+def _contains_as_token(text: str, token: str) -> bool:
+    """大小写不敏感的精确子串匹配，且不允许 token 是更长字母数字串的一部分。
+
+    用于图号快速通道里"自身名不符合标准图号格式"的兜底匹配——避免
+    "XC1-KJ" 之类短名字被 "XC1-KJXYZ" 这种更长的无关串误命中。
+    连字符不在 ``[0-9A-Za-z]`` 内，天然构成边界，不需要特殊处理。
+    """
+    pattern = re.escape(token)
+    return re.search(rf"(?<![0-9A-Za-z]){pattern}(?![0-9A-Za-z])", text, re.IGNORECASE) is not None
+
+
+def _identifier_matches(query: str, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """在目录里查找与查询文本中图号精确/归一化匹配，或自由格式名称精确匹配的记录。
+
+    与 ``knowledge/part_ids.py`` 的写入期规则共用同一套解析；查询侧的这个用法
+    参照的是已移除的企业问答 ``identifier_match``（见 CLAUDE.md 第 11 节）——
+    图号是确定性身份标识，精确命中理应优先于任何语义/统计分数，
+    这条保证之前只在企业问答那一侧存在，模型检索侧从未有过。
+    """
+    requested = extract_part_ids(query)
+    matches: list[dict[str, Any]] = []
+    for record in records:
+        # part_id 里的 "@装配号" 后缀只是同名不同几何时用于去重的消歧后缀
+        # （scripts/decompose_assembly_step.py 的 unique_part_id），不是零件
+        # 身份的一部分。整串喂给 extract_part_ids 会把装配号一起当成这个
+        # 零件的"另一个图号"，导致同一批消歧记录互相串号命中——
+        # 实测 IMU180-222-019@IMU180-22B-000 会因此被 IMU180-22B-000
+        # 这个纯装配号查询错误命中，还会连带命中同批次的
+        # IMU180-222-021@IMU180-22B-000。
+        own_name = str(record.get("part_id", "")).split("@", 1)[0]
+        if not own_name:
+            continue
+        own_identifiers = extract_part_ids(own_name)
+        if own_identifiers:
+            if requested and own_identifiers & requested:
+                matches.append(record)
+            continue
+        # own_name 不符合标准图号格式：查询侧也不可能靠 extract_part_ids
+        # 抽出同一个 token 来比较（同一套正则，同样解析不出来），
+        # 只能直接拿自身名去查询文本里做子串匹配。
+        if len(own_name) >= _MIN_FALLBACK_NAME_LENGTH and _contains_as_token(query, own_name):
+            matches.append(record)
+    return matches
+
+
+def _pin_identifier_hits(
+    ranked: list[dict[str, Any]], identifier_ids: set[str], top_k: int
+) -> list[dict[str, Any]]:
+    """把精确图号命中的条目移到最前，真实分数不变，只调整排序位置。"""
+
+    if not identifier_ids:
+        return ranked[:top_k]
+    pinned = [item for item in ranked if str(item["record"]["part_id"]) in identifier_ids]
+    remaining = [item for item in ranked if str(item["record"]["part_id"]) not in identifier_ids]
+    return (pinned + remaining)[:top_k]
+
+
 def hierarchical_retrieve(query: str, top_k: int = 3) -> tuple[list[dict[str, Any]], list[str]]:
     # 仅在有证据时先路由到可能类别，再排序具体零件；随后加入全库回填，
     # 以降低路由不准确时的召回损失。
     """Two-stage RAG: route engineering intent to families, then retrieve individual parts."""
     records = load_cad_catalog()
+
+    # 图号快速通道：查询里含可识别图号时，目录里精确/归一化匹配的记录
+    # 必须无条件排在最前。它们仍然进入 hybrid_retrieve 参与真实打分——
+    # 置顶只调整排序位置，不编造一个虚假的满分去冒充计算出的分数
+    # （那正是"不用一种证据的数值冒充另一种证据的排序"这条项目原则要禁止的）。
+    identifier_records = _identifier_matches(query, records)
+    identifier_ids = {str(record["part_id"]) for record in identifier_records}
+
     families = route_engineering_intent(query, records)
     scores = [_family_score(query, engineering_profile(record)) for record in records]
     if not scores or max(scores) <= 0:
-        return hybrid_retrieve(query, top_k=top_k, candidates=records), []
-    scoped = [record for record in records if part_family(record) in families]
-    backfill = hybrid_retrieve(query, top_k=max(2, top_k // 2), candidates=records)
-    existing = {record["part_id"] for record in scoped}
-    for item in backfill:
-        if item["record"]["part_id"] not in existing:
-            scoped.append(item["record"])
-            existing.add(item["record"]["part_id"])
-    return hybrid_retrieve(query, top_k=top_k, candidates=scoped), families
+        scoped = records
+        reported_families: list[str] = []
+    else:
+        scoped = [record for record in records if part_family(record) in families]
+        backfill = hybrid_retrieve(query, top_k=max(2, top_k // 2), candidates=records)
+        existing = {record["part_id"] for record in scoped}
+        for item in backfill:
+            if item["record"]["part_id"] not in existing:
+                scoped.append(item["record"])
+                existing.add(item["record"]["part_id"])
+        reported_families = families
+
+    if not identifier_ids:
+        return hybrid_retrieve(query, top_k=top_k, candidates=scoped), reported_families
+
+    # 精确命中的记录必须进入候选集参与真实打分，即使路由或回填都没选中它们；
+    # top_k 取候选总数以确保它们不会先被 hybrid_retrieve 自己的截断挡在结果外。
+    existing = {str(record["part_id"]) for record in scoped}
+    for record in identifier_records:
+        if str(record["part_id"]) not in existing:
+            scoped.append(record)
+            existing.add(str(record["part_id"]))
+    ranked = hybrid_retrieve(query, top_k=len(scoped), candidates=scoped)
+    return _pin_identifier_hits(ranked, identifier_ids, top_k), reported_families
 
 

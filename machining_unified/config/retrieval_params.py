@@ -5,7 +5,7 @@
 
 分组语义：
 
-- ``enterprise`` / ``ensemble`` / ``hybrid`` / ``unified_embedding``
+- ``ensemble`` / ``hybrid``
   是凸组合，各自内部必须和为 1，否则分数尺度会漂移，加载时会拒绝；
 - ``geometry_similarity`` **不是**凸组合。它的分母由本次比较中真正可用的字段
   动态累加（缺失字段不计入），因此这些数值表示相对重要性，只做区间校验。
@@ -15,16 +15,15 @@
 .. code-block:: json
 
     {
-      "enterprise": {"vector": 0.6, "lexical": 0.4},
+      "ensemble": {"lexical": 0.4, "semantic": 0.6},
       "geometry_similarity": {"material": 0.18}
     }
 
 改动生效范围（重要）：
 
-- ``enterprise`` / ``ensemble`` / ``hybrid`` / ``geometry_similarity`` 是查询期权重，
-  改完刷新页面即可生效，不需要重建索引；
-- ``unified_embedding`` 参与**写入期**的向量合成，改动后必须重建多模态索引
-  （``scripts/build_unified_index.py``），否则库内向量与新权重不一致。
+- 本文件全部权重都是查询期权重，改完刷新页面即可生效，不需要重建索引。
+  统一多模态向量库（``scripts/build_unified_index.py``）现在只是图片检索的
+  内部粗召回加速层、纯几何多视角编码，不受本文件任何配置影响。
 """
 
 from __future__ import annotations
@@ -41,14 +40,6 @@ logger = logging.getLogger(__name__)
 
 # 浮点求和不必精确到二进制相等；1e-6 足以拦截 0.7/0.15/0.1 这类真正写错的组合。
 _SUM_TOLERANCE = 1e-6
-
-
-@dataclass(frozen=True)
-class EnterpriseScoreWeights:
-    """企业证据库：向量语义与 BM25 词法的融合权重。"""
-
-    vector: float = 0.72
-    lexical: float = 0.28
 
 
 @dataclass(frozen=True)
@@ -69,14 +60,6 @@ class HybridScoreWeights:
     fallback_vector: float = 0.55
     fallback_lexical: float = 0.35
     fallback_graph: float = 0.10
-
-
-@dataclass(frozen=True)
-class UnifiedEmbeddingWeights:
-    """CLIP 统一空间中文本与几何多视角的合成权重（写入期）。"""
-
-    text: float = 0.35
-    geometry: float = 0.65
 
 
 @dataclass(frozen=True)
@@ -130,19 +113,15 @@ class SizeProximityWeights:
 
 @dataclass(frozen=True)
 class RetrievalParams:
-    enterprise: EnterpriseScoreWeights = EnterpriseScoreWeights()
     ensemble: EnsembleRetrieverWeights = EnsembleRetrieverWeights()
     hybrid: HybridScoreWeights = HybridScoreWeights()
-    unified_embedding: UnifiedEmbeddingWeights = UnifiedEmbeddingWeights()
     geometry_similarity: GeometrySimilarityWeights = GeometrySimilarityWeights()
     size_proximity: SizeProximityWeights = SizeProximityWeights()
 
 
 _SECTIONS: dict[str, type] = {
-    "enterprise": EnterpriseScoreWeights,
     "ensemble": EnsembleRetrieverWeights,
     "hybrid": HybridScoreWeights,
-    "unified_embedding": UnifiedEmbeddingWeights,
     "geometry_similarity": GeometrySimilarityWeights,
     "size_proximity": SizeProximityWeights,
 }
@@ -155,13 +134,11 @@ _ENUM_FIELDS: dict[tuple[str, str], tuple[str, ...]] = {
 
 # 必须和为 1 的凸组合；值是该分组内构成一次打分的字段集合。
 _CONVEX_GROUPS: dict[str, tuple[tuple[str, ...], ...]] = {
-    "enterprise": (("vector", "lexical"),),
     "ensemble": (("lexical", "semantic"),),
     "hybrid": (
         ("ensemble", "ensemble_lexical", "ensemble_graph"),
         ("fallback_vector", "fallback_lexical", "fallback_graph"),
     ),
-    "unified_embedding": (("text", "geometry"),),
 }
 
 

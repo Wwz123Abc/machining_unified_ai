@@ -202,18 +202,20 @@ def test_mode_switch_hides_stale_results() -> None:
 
     if not check("文字检索已写入会话状态", at.session_state["model_search"] is not None):
         return
+    # 中文工程语义结果不再单独展示（见 app.py 的说明），文字模式下唯一的
+    # 结果区是工程混合排序，因此改用它作为切换隔离测试的标记。
     rendered = " ".join(element.value for element in at.markdown)
-    check("已渲染中文工程语义结果", "中文工程语义结果" in rendered)
+    check("已渲染工程混合排序结果", "工程混合排序结果" in rendered)
 
     at = _set_query_mode(at, "零件图片")
     _assert_no_exception(at, "切换到零件图片")
     rendered_after = " ".join(element.value for element in at.markdown)
-    check("切换后不再展示文字检索结果", "中文工程语义结果" not in rendered_after)
+    check("切换后不再展示文字检索结果", "工程混合排序结果" not in rendered_after)
     check("会话状态本身仍保留结果", at.session_state["model_search"] is not None)
 
     at = _set_query_mode(at, "文字描述")
     rendered_back = " ".join(element.value for element in at.markdown)
-    check("切回后结果由会话状态重建", "中文工程语义结果" in rendered_back)
+    check("切回后结果由会话状态重建", "工程混合排序结果" in rendered_back)
 
 
 def main() -> int:

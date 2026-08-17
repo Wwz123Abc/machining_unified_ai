@@ -13,7 +13,7 @@
   不允许任何一次渲染就地改写它；
 - 序列字段用 ``tuple`` 而非 ``list``，与不可变语义保持一致；
 - 保留原始 ``Document`` / ``Image`` 对象，证据可追溯到底层原文，不做有损转换；
-- 每种检索分支一个类型：几何、语义、多模态、视觉、混合排序的分数含义互不相同，
+- 每种检索分支一个类型：几何、语义、视觉、混合排序的分数含义互不相同，
   合并成一个通用类型会重新丢失区分度。
 """
 
@@ -60,16 +60,6 @@ class SemanticHit:
 
 
 @dataclass(frozen=True)
-class UnifiedHit:
-    """CLIP 统一多模态补充召回结果。分数与 BGE、几何分不可横向比较。"""
-
-    part_id: str
-    score: float
-    source_file: str
-    embedding_method: str
-
-
-@dataclass(frozen=True)
 class VisualHit:
     """逐模型视觉比对结果，附带参与比对的渲染图。"""
 
@@ -98,55 +88,12 @@ class HybridHit:
 
 
 @dataclass(frozen=True)
-class EnterpriseEvidence:
-    """企业资料证据单元。``citation`` 是回答中引用的 [S#] 编号。"""
-
-    citation: str
-    score: float
-    vector_score: float
-    lexical_score: float
-    identifier_match: bool
-    excerpt: str
-    excerpt_truncated: bool
-    warning: str | None
-    document: Document
-
-    @property
-    def source_id(self) -> str:
-        return str(self.document.metadata["source_id"])
-
-    @property
-    def title(self) -> str:
-        return str(self.document.metadata["title"])
-
-    @property
-    def source_kind(self) -> str:
-        return str(self.document.metadata["source_kind"])
-
-    @property
-    def source_file(self) -> str:
-        return str(self.document.metadata["source_file"])
-
-
-@dataclass(frozen=True)
-class EnterpriseAnswer:
-    """企业资料问答结果。``generated`` 区分模型生成与本地证据摘要。"""
-
-    answer: str
-    evidence: tuple[EnterpriseEvidence, ...]
-    generated: bool
-    warning: str | None = None
-    assistant_mode: bool = False
-
-
-@dataclass(frozen=True)
 class StepSearchResult:
-    """STEP 查询：几何、语义、多模态三路结果互相独立，分数不合并。"""
+    """STEP 查询：几何与语义两路结果互相独立，分数不合并。"""
 
     query: dict[str, Any]
     geometry: tuple[GeometryHit, ...]
     semantic: tuple[SemanticHit, ...]
-    unified: tuple[UnifiedHit, ...]
 
 
 @dataclass(frozen=True)
@@ -156,12 +103,14 @@ class TextSearchResult:
     semantic: tuple[SemanticHit, ...]
     hybrid: tuple[HybridHit, ...]
     families: tuple[str, ...]
-    unified: tuple[UnifiedHit, ...]
 
 
 @dataclass(frozen=True)
 class ImageSearchResult:
-    """图片查询：专用视觉排序，多模态为可选补充。"""
+    """图片查询：逐模型视觉比对排序。
+
+    CLIP 在这条路径上只作为内部粗召回加速手段（见 ``cad/visual.retrieve_by_image``），
+    不再作为独立分支对用户展示——它的候选圈定结果不是最终排序依据。
+    """
 
     visual: tuple[VisualHit, ...]
-    unified: tuple[UnifiedHit, ...]

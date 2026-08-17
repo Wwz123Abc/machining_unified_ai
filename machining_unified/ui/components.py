@@ -22,10 +22,10 @@ def render_sidebar() -> None:
             unsafe_allow_html=True,
         )
         st.badge("知识库在线", icon=":material/radio_button_checked:", color="green")
-        st.caption("CAD 检索 · 多模态召回 · 企业资料问答")
+        st.caption("CAD 检索 · 多模态召回")
         st.space("medium")
         st.markdown("##### 使用提示")
-        st.caption("模型检索和企业资料问答相互独立，所有结果均保留来源和证据类型。")
+        st.caption("几何、语义与视觉三路结果相互独立，均保留来源和证据类型。")
         st.space("medium")
         st.warning(
             "几何候选、检索排序和装配推断在生产使用前均须由工程师复核。",
@@ -33,21 +33,7 @@ def render_sidebar() -> None:
         )
 
 
-def render_workspace_selector() -> str:
-    """在统一入口中选择功能区，避免隐藏或不可达的检索分支。"""
-
-    with st.container(horizontal=True, horizontal_alignment="center"):
-        selected = st.segmented_control(
-            "工作区",
-            ["模型检索", "企业资料问答"],
-            default="模型检索",
-            key="workspace_mode",
-            persist_state="session",
-        )
-    return selected or "模型检索"
-
-
-def render_model_search_workbench() -> tuple[bool, str, str, Any, bool, Any]:
+def render_model_search_workbench() -> tuple[bool, str, str, Any, Any]:
     """渲染统一模型检索入口并返回已批量提交的查询参数。"""
 
     with st.container(key="command_deck", gap=None):
@@ -60,7 +46,7 @@ def render_model_search_workbench() -> tuple[bool, str, str, Any, bool, Any]:
             <div class="tech-rail">
               <div><i>几何解析</i><b>OCP + XCAF</b><span>STEP 结构事实</span></div>
               <div><i>语义检索</i><b>BGE + Chroma</b><span>中文工程语义</span></div>
-              <div><i>融合证据</i><b>BM25 + CLIP</b><span>词法与多模态补充</span></div>
+              <div><i>融合证据</i><b>BM25 + 知识图谱</b><span>词法与图谱融合</span></div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -92,21 +78,6 @@ def render_model_search_workbench() -> tuple[bool, str, str, Any, bool, Any]:
                 key="model_query_mode",
                 persist_state="session",
             ) or "STEP 模型"
-            # CLIP（clip-ViT-B-32）是英文图文模型，中文查询在其空间里基本是噪声：
-            # 实测三条中文描述的族级命中为 0/9。与其把噪声当作"补充结果"展示，
-            # 不如在文字模式下直接停用，并说明原因。
-            text_query_mode = query_mode == "文字描述"
-            use_unified = st.toggle(
-                "启用 CLIP 统一多模态补充召回",
-                value=False,
-                key="use_unified_multimodal",
-                disabled=text_query_mode,
-                help=(
-                    "CLIP 是英文图文模型，中文描述在其向量空间中无有效信号，故文字模式下停用。"
-                    if text_query_mode
-                    else "适合比较整体外形和图文语义；不会替代严格尺寸与特征检索。"
-                ),
-            ) and not text_query_mode
             query_text = ""
             uploaded_file = None
             with st.form(f"model_search_{query_mode}", border=False):
@@ -145,26 +116,4 @@ def render_model_search_workbench() -> tuple[bool, str, str, Any, bool, Any]:
             """,
             unsafe_allow_html=True,
         )
-    return submitted, query_mode, query_text, uploaded_file, use_unified, progress_slot
-
-
-def render_enterprise_header() -> None:
-    """渲染企业资料问答的工业风页头。"""
-
-    with st.container(key="command_deck", gap=None):
-        st.markdown(
-            """
-            <div class="console-topbar">
-              <div class="console-brand"><span class="brand-mark">◈</span> 工艺智核 <small>ENTERPRISE KNOWLEDGE</small></div>
-              <div class="console-status"><i></i> EVIDENCE BASE / ONLINE</div>
-            </div>
-            <div class="tech-rail">
-              <div><i>企业模型</i><b>STEP 几何</b><span>可追溯模型事实</span></div>
-              <div><i>装配资料</i><b>BOM + 图纸</b><span>图号与来源优先</span></div>
-              <div><i>回答约束</i><b>Evidence First</b><span>事实逐条引用</span></div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.markdown("### 企业机械资料问答")
-        st.caption("检索 STEP、装配 BOM 与工程图 PDF；企业事实必须附带 [S#] 证据编号。")
+    return submitted, query_mode, query_text, uploaded_file, progress_slot

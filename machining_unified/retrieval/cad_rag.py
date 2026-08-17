@@ -181,6 +181,10 @@ def generate_rag_explanation(query_record: dict[str, Any], results: Sequence[Sem
         api_key=api_key,
         base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
         temperature=0,
+        # 无超时时网络挂起会让调用方（app.py）的检索请求跟着卡死；
+        # 这是可选的说明生成，慢比不生成更差。
+        timeout=15.0,
+        max_retries=1,
     )
     # LCEL 串联提示词与模型；提示词明确禁止无证据的几何、材料、尺寸与工艺断言。
     response = (prompt | model).invoke(

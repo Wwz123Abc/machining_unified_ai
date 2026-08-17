@@ -15,7 +15,6 @@ sys.path.insert(0, str(ROOT))
 
 from machining_unified.config.paths import (  # noqa: E402
     CAD_CATALOG_PATH,
-    CHAT_HISTORY_PATH,
     MULTIMODAL_MANIFEST_PATH,
     PART_MANIFEST_PATH,
     PROJECT_ROOT,
@@ -65,8 +64,6 @@ def check_manifests(catalog_count: int) -> list[str]:
         errors.append(
             f"multimodal manifest count ({indexed}) differs from CAD catalog ({catalog_count})"
         )
-
-    load_json(CHAT_HISTORY_PATH, list)
     return errors
 
 

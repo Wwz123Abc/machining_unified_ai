@@ -27,16 +27,10 @@ from machining_unified.dto import (
     SemanticHit,
     StepSearchResult,
     TextSearchResult,
-    UnifiedHit,
     VisualHit,
 )
 from machining_unified.knowledge.engineering import FAMILY_LABELS, hierarchical_retrieve
 from machining_unified.retrieval.cad_rag import retrieve_cad_rag, retrieve_cad_rag_by_text
-from machining_unified.retrieval.multimodal import (
-    retrieve_unified_by_image,
-    retrieve_unified_by_step,
-    retrieve_unified_by_text,
-)
 
 
 def save_step_upload(uploaded_file: Any) -> Path:
@@ -93,18 +87,6 @@ def _semantic_hits(items: list[dict[str, Any]]) -> tuple[SemanticHit, ...]:
     )
 
 
-def _unified_hits(items: list[dict[str, Any]]) -> tuple[UnifiedHit, ...]:
-    return tuple(
-        UnifiedHit(
-            part_id=str(item["part_id"]),
-            score=float(item["score"]),
-            source_file=str(item.get("source_file") or ""),
-            embedding_method=str(item.get("embedding_method") or ""),
-        )
-        for item in items
-    )
-
-
 def _visual_hits(items: list[dict[str, Any]]) -> tuple[VisualHit, ...]:
     return tuple(
         VisualHit(
@@ -141,6 +123,37 @@ def _hybrid_hits(items: list[dict[str, Any]]) -> tuple[HybridHit, ...]:
 # 只取 top_k 会让真正相关的模型落在候选之外，重排也就无从纠正。
 SEMANTIC_CANDIDATE_FACTOR = 3
 
+# 断崖截断阈值：排名 i 的分数低于榜首这个比例时视为"跟不上"，自动截断。
+# 三个展示分支（几何/混合/视觉）共用同一条规则——它们各自的分数序列已经带着
+# 自己的分布信息，不需要为每个分支单独标定一个绝对阈值：绝对阈值在分支间
+# 没有统一含义（几何是代码加权分、混合是 BM25+向量+图谱融合分、视觉是另一
+# 空间的相似度），也会随索引重建或权重配置整体漂移。这里只看"相对榜首掉了
+# 多少"，随数据自动重新标定。
+_CLIFF_RATIO = 0.7
+
+
+def _cliff_truncate(items: tuple[Any, ...]) -> tuple[Any, ...]:
+    """在按分数降序排列的结果里找第一个低于榜首 70% 的位置，就地截断。
+
+    ``top_k`` 仍然是硬上限——调用方已经按 top_k 取到这里，这一步只会让返回
+    数量变得更少，不会更多，也不会重新排序。分数全部打平（例如多个候选并列
+    最高分）时不会误截断：并列分数不低于榜首的 70%，天然会全部保留。
+    """
+    if not items:
+        return items
+    top_score = float(items[0].score)
+    if top_score <= 0:
+        # 没有一条真正打上分（例如没有可比较字段），阈值判断没有意义，
+        # 原样返回交给上层处理，不要在这里制造一个"全部截空"的假象。
+        return items
+    cutoff = top_score * _CLIFF_RATIO
+    kept: list[Any] = []
+    for item in items:
+        if float(item.score) < cutoff:
+            break
+        kept.append(item)
+    return tuple(kept)
+
 
 def _rerank_semantic_by_geometry(
     query: dict[str, Any], hits: tuple[SemanticHit, ...], top_k: int
@@ -167,37 +180,45 @@ def _rerank_semantic_by_geometry(
     return tuple(reranked[:top_k])
 
 
-def search_by_step(path: Path, top_k: int, use_unified: bool = False) -> StepSearchResult:
-    """并行保留严格几何、BGE 语义和可选 CLIP 结果，不混成伪统一分数。"""
+def search_by_step(path: Path, top_k: int) -> StepSearchResult:
+    """并行保留严格几何与 BGE 语义结果，不混成伪统一分数。
+
+    ``top_k`` 是几何结果的硬上限，不是目标值：断崖截断会按几何分自动去掉
+    "跟不上榜首"的尾部，实际返回数可能少于 ``top_k``。语义结果不展示给用户
+    （仅供 STEP 差异说明内部消费），不做截断。
+    """
 
     query = extract_step_features(path, part_id="QUERY", use_filename_hint=False)
     semantic = _semantic_hits(retrieve_cad_rag(query, top_k=top_k * SEMANTIC_CANDIDATE_FACTOR))
     return StepSearchResult(
         query=query,
-        geometry=_geometry_hits(retrieve_similar_cad(query, top_k=top_k)),
+        geometry=_cliff_truncate(_geometry_hits(retrieve_similar_cad(query, top_k=top_k))),
         semantic=_rerank_semantic_by_geometry(query, semantic, top_k),
-        unified=_unified_hits(retrieve_unified_by_step(query, top_k=top_k)) if use_unified else (),
     )
 
 
-def search_by_text(question: str, top_k: int, use_unified: bool = False) -> TextSearchResult:
-    """执行中文向量召回、BM25/知识路由混排和可选 CLIP 文本召回。"""
+def search_by_text(question: str, top_k: int) -> TextSearchResult:
+    """执行中文向量召回与 BM25/知识路由混排。
+
+    ``top_k`` 是混合结果的硬上限，实际返回数由断崖截断决定，可能更少。
+    图号精确命中的置顶结果不受影响——它们排在断崖判断的参照点（榜首）
+    之前，天然通过截断。
+    """
 
     hybrid, family_codes = hierarchical_retrieve(question, top_k=top_k)
     return TextSearchResult(
         semantic=_semantic_hits(retrieve_cad_rag_by_text(question, top_k=top_k)),
-        hybrid=_hybrid_hits(hybrid),
+        hybrid=_cliff_truncate(_hybrid_hits(hybrid)),
         families=tuple(FAMILY_LABELS.get(code, code) for code in family_codes),
-        unified=_unified_hits(retrieve_unified_by_text(question, top_k=top_k)) if use_unified else (),
     )
 
 
-def search_by_image(
-    image: Any, catalog: list[dict[str, Any]], top_k: int, use_unified: bool = False
-) -> ImageSearchResult:
-    """执行专用视觉排序，并把统一多模态召回作为可选补充证据。"""
+def search_by_image(image: Any, catalog: list[dict[str, Any]], top_k: int) -> ImageSearchResult:
+    """执行专用视觉排序。
 
-    return ImageSearchResult(
-        visual=_visual_hits(retrieve_by_image(image, catalog, top_k=top_k)),
-        unified=_unified_hits(retrieve_unified_by_image(image, top_k=top_k)) if use_unified else (),
-    )
+    ``retrieve_by_image`` 内部会先用 CLIP 统一库粗召回候选、再只对候选精排——
+    这一步对本层透明，本层只关心最终排序结果。``top_k`` 是硬上限，
+    实际返回数由断崖截断决定。
+    """
+
+    return ImageSearchResult(visual=_cliff_truncate(_visual_hits(retrieve_by_image(image, catalog, top_k=top_k))))

@@ -11,6 +11,8 @@ __pycache__/
 data/vector_stores/
 data/runtime/chat_history.json
 data/runtime/meshes/
+data/runtime/visual_previews/
+data/runtime/knowledge_graph.json
 
 # 企业资料与派生目录只保存在本机
 data/enterprise/cad_samples/

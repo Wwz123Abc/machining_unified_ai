@@ -1,4 +1,4 @@
-"""统一工作台的模型检索与企业证据展示组件。
+"""统一工作台的模型检索结果展示组件。
 
 本层只消费 ``machining_unified.dto`` 中的类型化结果，不再按字符串键取值：
 字段改名会在这里直接变成 AttributeError，而不是页面上悄悄少一块内容。
@@ -10,14 +10,11 @@ from typing import Any, Sequence
 
 import streamlit as st
 
-from machining_unified.cad.viewer import render_step_file, render_step_model, render_step_payload
+from machining_unified.cad.viewer import render_step_file, render_step_payload
 from machining_unified.config.paths import PROJECT_ROOT
 from machining_unified.dto import (
-    EnterpriseEvidence,
     GeometryHit,
     HybridHit,
-    SemanticHit,
-    UnifiedHit,
     VisualHit,
 )
 from machining_unified.knowledge.engineering import expand_part_relations
@@ -120,72 +117,6 @@ def render_geometry_results(
             render_graph_relations(card.part_id)
 
 
-def render_semantic_results(
-    items: Sequence[SemanticHit],
-    catalog_by_id: dict[str, dict[str, Any]],
-    key_prefix: str,
-) -> None:
-    """展示 BGE 中文语义召回结果及对应 STEP 预览。"""
-
-    st.markdown("#### 中文工程语义结果")
-    if not items:
-        st.warning("语义向量库没有返回模型。", icon=":material/search_off:")
-        return
-    if all(hit.rerank_score is None for hit in items):
-        # 没有几何查询可供重排时（文字检索），这里就是裸 BGE 排序。
-        # 实测本库上它的分数几乎平局（同族查询相差不到 0.005），名次由噪声决定，
-        # 必须明说是补充召回，不能让用户当作可信排序。
-        st.caption("补充召回：本库上语义分区分度很低，名次仅供参考，请以下方工程混合排序为准。")
-    for cell, hit, index in _grid(items):
-        with cell, st.container(border=True):
-            if hit.rerank_score is None:
-                st.write(f"**{index}. {hit.part_id}** · 语义相似度 **{hit.score:.3f}**")
-                st.caption(f"来源：`{hit.source_file}` ｜方式：BGE 中文语义向量")
-            else:
-                # 名次由几何分决定，语义分只表示召回强度。两个分数都要出现，
-                # 否则就是用一种证据的数值冒充另一种证据的排序。
-                st.write(f"**{index}. {hit.part_id}** · 几何重排分 **{hit.rerank_score:.3f}**")
-                st.caption(
-                    f"语义召回分 {hit.score:.3f}（仅决定是否进入候选，本库上区分度极低）"
-                    f" ｜来源：`{hit.source_file}`"
-                )
-                if hit.rerank_reasons:
-                    st.caption("重排依据：" + "；".join(hit.rerank_reasons))
-            record = catalog_by_id.get(hit.part_id)
-            if record:
-                with _preview_slot():
-                    render_step_model(
-                        record, key=f"{key_prefix}-{index}-{hit.part_id}", height=GRID_PREVIEW_HEIGHT
-                    )
-
-
-def render_unified_results(
-    items: Sequence[UnifiedHit],
-    catalog_by_id: dict[str, dict[str, Any]],
-    key_prefix: str,
-) -> None:
-    """展示 CLIP 统一图文/STEP 空间中的补充召回证据。"""
-
-    st.markdown("#### 统一多模态补充结果")
-    st.info(
-        "该分支比较整体形态与图文语义，不代表尺寸、公差、孔径或工艺等效。",
-        icon=":material/info:",
-    )
-    if not items:
-        st.warning("统一多模态向量库没有返回模型。", icon=":material/search_off:")
-        return
-    for cell, hit, index in _grid(items):
-        record = catalog_by_id.get(hit.part_id)
-        with cell, st.container(border=True):
-            st.write(f"**{index}. {hit.part_id}** · 多模态相似度 **{hit.score:.3f}**")
-            st.caption(f"来源：`{hit.source_file}` ｜方式：{hit.embedding_method}")
-            if record:
-                with _preview_slot():
-                    render_step_model(
-                        record, key=f"{key_prefix}-{index}-{hit.part_id}", height=GRID_PREVIEW_HEIGHT
-                    )
-
-
 def render_image_results(items: Sequence[VisualHit]) -> None:
     """展示逐模型视觉检索结果。"""
 
@@ -224,24 +155,3 @@ def render_hybrid_results(items: Sequence[HybridHit], families: Sequence[str]) -
             st.write("证据维度：" + "、".join(hit.evidence))
             st.write("功能候选：" + "、".join(hit.functions))
             st.caption(f"来源：`{hit.source_file}`")
-
-
-def render_enterprise_evidence(items: Sequence[EnterpriseEvidence]) -> None:
-    """展示企业知识库命中的原始 STEP、BOM 或工程图证据。"""
-
-    warning = next((item.warning for item in items if item.warning), None)
-    if warning:
-        st.warning(warning, icon=":material/warning:")
-    if not items:
-        st.caption("本次回答没有可展示的企业资料证据。")
-        return
-    for item in items:
-        with st.container(border=True):
-            st.markdown(f"**[{item.citation}] [{item.source_id}] {item.title}**")
-            st.caption(
-                f"资料类型：{item.source_kind} ｜相关度：{item.score:.3f} ｜"
-                f"来源：`{item.source_file}`"
-            )
-            st.write(item.excerpt)
-            if item.excerpt_truncated:
-                st.caption("内容较长，此处仅展示前 1200 字；请打开来源文件核对全文。")

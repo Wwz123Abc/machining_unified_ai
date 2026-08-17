@@ -78,23 +78,26 @@ def test_shipped_file_matches_code_defaults() -> None:
 
 def test_partial_override() -> None:
     print("\n== 部分覆盖 ==")
-    params = _load_from({"enterprise": {"vector": 0.6, "lexical": 0.4}})
-    check("被覆盖的字段生效", params.enterprise.vector == 0.6)
-    check("同节未写字段保持默认", params.ensemble.lexical == 0.35)
-    check("未提及的节保持默认", params.hybrid.ensemble == 0.70)
+    # hybrid 有两个独立的凸组（ensemble_* 与 fallback_*），只覆盖前一组，
+    # 才能同时验证"同节内未写的另一组保持默认"——单组两字段的节做不到这一点，
+    # 覆盖它必然要同时给出两个字段才能维持和为 1。
+    params = _load_from({"hybrid": {"ensemble": 0.5, "ensemble_lexical": 0.3, "ensemble_graph": 0.2}})
+    check("被覆盖的字段生效", params.hybrid.ensemble == 0.5)
+    check("同节未写字段保持默认", params.hybrid.fallback_vector == 0.55)
+    check("未提及的节保持默认", params.ensemble.lexical == 0.35)
 
 
 def test_validation_rejects_bad_config() -> None:
     print("\n== 防御性校验 ==")
     _expect_error("拒绝未知配置节", {"nonexistent": {}}, "未知配置节")
-    _expect_error("拒绝未知字段（拼写错误）", {"enterprise": {"vectorr": 0.72, "lexical": 0.28}}, "未知字段")
-    _expect_error("拒绝越界取值", {"enterprise": {"vector": 1.5, "lexical": 0.28}}, "0 到 1")
-    _expect_error("拒绝负数", {"enterprise": {"vector": -0.1, "lexical": 1.1}}, "0 到 1")
-    _expect_error("拒绝非数字", {"enterprise": {"vector": "high", "lexical": 0.3}}, "必须是数字")
-    _expect_error("拒绝不和为 1 的凸组合", {"enterprise": {"vector": 0.5, "lexical": 0.2}}, "必须和为 1")
+    _expect_error("拒绝未知字段（拼写错误）", {"ensemble": {"lexicall": 0.65, "semantic": 0.35}}, "未知字段")
+    _expect_error("拒绝越界取值", {"ensemble": {"lexical": 1.5, "semantic": 0.35}}, "0 到 1")
+    _expect_error("拒绝负数", {"ensemble": {"lexical": -0.1, "semantic": 1.1}}, "0 到 1")
+    _expect_error("拒绝非数字", {"ensemble": {"lexical": "high", "semantic": 0.3}}, "必须是数字")
+    _expect_error("拒绝不和为 1 的凸组合", {"ensemble": {"lexical": 0.5, "semantic": 0.2}}, "必须和为 1")
     _expect_error("拒绝 hybrid 降级组不和为 1",
                   {"hybrid": {"fallback_vector": 0.5, "fallback_lexical": 0.2, "fallback_graph": 0.1}}, "必须和为 1")
-    _expect_error("拒绝顶层非对象", {"enterprise": 0.5}, "必须是对象")
+    _expect_error("拒绝顶层非对象", {"ensemble": 0.5}, "必须是对象")
 
     # 几何相似度不是凸组合，其和不为 1 属于正常。
     try:

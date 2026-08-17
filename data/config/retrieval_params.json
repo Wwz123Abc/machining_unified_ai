@@ -1,8 +1,4 @@
 {
-  "enterprise": {
-    "vector": 0.72,
-    "lexical": 0.28
-  },
   "ensemble": {
     "lexical": 0.35,
     "semantic": 0.65
@@ -14,10 +10,6 @@
     "fallback_vector": 0.55,
     "fallback_lexical": 0.35,
     "fallback_graph": 0.1
-  },
-  "unified_embedding": {
-    "text": 0.35,
-    "geometry": 0.65
   },
   "geometry_similarity": {
     "part_family": 0.15,
